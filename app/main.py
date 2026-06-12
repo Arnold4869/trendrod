@@ -73,7 +73,7 @@ def _save_portfolios(pfs):
         json.dump(pfs, f, ensure_ascii=False, indent=2)
 
 def _default_portfolios():
-    return [{"id":"default","name":"默认组合","window":22,"ma_period":60,"min_hold_days":5,"stop_loss":0,"mom_weights":[0.0,1.0,0.0],"indices":[
+    return [{"id":"default","name":"默认组合","window":22,"ma_period":60,"min_hold_days":5,"stop_loss":0,"mom_weights":[0.25,0.5,0.25],"indices":[
         {"sym":"sh000016","name":"上证50"},
         {"sym":"sz399006","name":"创业板指"},
         {"sym":"sh000012","name":"国债指数"}
@@ -154,7 +154,7 @@ def _search_indices(q: str):
     return results
 
 # ─── 策略 + 回测 ───────────────────────────────────────
-MOM_PERIODS = [5, 22, 60]       # 固定3个动量窗口（5天/22天/60天）
+MOM_PERIODS = [5, 22, 60]       # 固定3个动量窗口（5天/22天/60天）# 双引擎对齐: 与 backtest_bt.py 同步使用 [0.25, 0.5, 0.25]
 
 def compute(df, indices, window, ma_period=60, min_hold_days=5, stop_loss=0,
                  mom_weights=None, top_n=1, weight_ratios=None):
@@ -170,7 +170,7 @@ def compute(df, indices, window, ma_period=60, min_hold_days=5, stop_loss=0,
 
     # 权重
     if not mom_weights or len(mom_weights) != 3:
-        mom_weights = [0.0, 1.0, 0.0]
+        mom_weights = [0.25, 0.5, 0.25]
     wgt_sum = sum(mom_weights)
     if wgt_sum > 0:
         mom_weights = [w/wgt_sum for w in mom_weights]
@@ -519,7 +519,7 @@ def _recompute_cache(pfid, bench_sym=None):
             return
         nav, stats, rot, h, _ = compute(dfall, pf["indices"], pf.get("window", 22),
                                           pf.get("ma_period", 60), pf.get("min_hold_days", 5),
-                                          pf.get("stop_loss", 0), pf.get("mom_weights", [0.0, 1.0, 0.0]),
+                                          pf.get("stop_loss", 0), pf.get("mom_weights", [0.25, 0.5, 0.25]),
                                           pf.get("top_n", 1), pf.get("weight_ratios", None))
         if nav:
             # 清理所有 NaN/Inf 值
@@ -756,7 +756,7 @@ def api_create_portfolio(data: dict = Body(...)):
         "ma_period": data.get("ma_period", 60),
         "min_hold_days": data.get("min_hold_days", 5),
         "stop_loss": data.get("stop_loss", 0),
-        "mom_weights": data.get("mom_weights", [0.0, 1.0, 0.0]),
+        "mom_weights": data.get("mom_weights", [0.25, 0.5, 0.25]),
         "top_n": data.get("top_n", 1),
         "weight_ratios": data.get("weight_ratios", None),
         "indices": data.get("indices", [])

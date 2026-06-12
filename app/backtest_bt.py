@@ -94,7 +94,7 @@ class MomentumRotation(bt.Strategy):
       stop_loss     : float       止损比例(%)，0=关闭
     """
     params = (
-        ("mom_periods",   [10, 22, 60]),
+        ("mom_periods",   [5, 22, 60]),
         ("mom_weights",   [0.25, 0.5, 0.25]),
         ("ma_period",     60),
         ("min_hold_days", 5),
@@ -312,13 +312,9 @@ def run_backtest(pf_id: str,
     names     = {i["sym"]: i["name"] for i in indices}
 
     # mom_periods 跟随 window 参数换算
-    window = pf.get("window", 22)
+    # 双引擎对齐: 与 main.py MOM_PERIODS 同步
     if mom_periods is None:
-        mom_periods = [
-            max(5, window * 10 // 22),
-            window,
-            window * 60 // 22,
-        ]
+        mom_periods = [5, 22, 60]
     mom_weights = [0.25, 0.5, 0.25]
 
     logger.info(f"组合: {pf['name']} | 标的: {syms}")
