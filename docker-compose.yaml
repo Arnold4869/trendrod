@@ -12,4 +12,27 @@ services:
       - ./data:/data
     environment:
       - TZ=Asia/Shanghai
+    # H40: 容器加固 —— 禁止提权、drop 全部 capability、按需放开
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+    read_only: false  # portfolios.json / sqlite 需写
+    tmpfs:
+      - /tmp
+    # H41: 复用 Dockerfile 的健康检查
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    # H42: 资源限制
+    mem_limit: 512m
+    cpus: '1.0'
+    pids_limit: 256
     restart: unless-stopped
