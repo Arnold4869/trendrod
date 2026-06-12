@@ -16,7 +16,13 @@ import pytz
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("trendrod")
 
-# 启动时检查 data 目录可写性
+INIT_CASH, COST_RATE = 1.0, 0.0003
+DB_PATH = os.getenv("DATABASE_PATH", "/data/trendrod.db")
+CONFIG_PATH = os.getenv("CONFIG_PATH", "/data/trendrod_portfolios.json")
+SCHEDULES_PATH = "/data/trendrod_schedules.json"
+UPDATE_LOG_PATH = "/data/trendrod_update_log.json"
+
+# 启动时检查 data 目录可写性（必须在 DB_PATH 定义之后）
 try:
     _data_dir = os.path.dirname(DB_PATH)
     os.makedirs(_data_dir, exist_ok=True)
@@ -26,12 +32,6 @@ try:
     logger.info(f'Data dir OK: {_data_dir} (uid={os.getuid()})')
 except Exception as _e:
     logger.error(f'Startup check failed: {_e}')
-
-INIT_CASH, COST_RATE = 1.0, 0.0003
-DB_PATH = os.getenv("DATABASE_PATH", "/data/trendrod.db")
-CONFIG_PATH = os.getenv("CONFIG_PATH", "/data/trendrod_portfolios.json")
-SCHEDULES_PATH = "/data/trendrod_schedules.json"
-UPDATE_LOG_PATH = "/data/trendrod_update_log.json"
 
 _caches = {}  # {portfolio_id: cache_dict}
 _scheduler = None
