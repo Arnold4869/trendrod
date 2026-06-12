@@ -22,6 +22,9 @@ data/
 *.sqlite
 *.sqlite3
 
+# Runtime caches (regenerated on app startup)
+static/indices_cache.json
+
 # OS / editor
 .DS_Store
 Thumbs.db
