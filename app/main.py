@@ -16,6 +16,17 @@ import pytz
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("trendrod")
 
+# 启动时检查 data 目录可写性
+try:
+    _data_dir = os.path.dirname(DB_PATH)
+    os.makedirs(_data_dir, exist_ok=True)
+    if not os.access(_data_dir, os.W_OK):
+        st = os.stat(_data_dir)
+        raise RuntimeError(f'CRITICAL: {_data_dir} not writable for uid={os.getuid()}, owner={st.st_uid}, mode={oct(st.st_mode)} — fix: chown -R 1000:1000 /volume1/docker/trendrod/data on host')
+    logger.info(f'Data dir OK: {_data_dir} (uid={os.getuid()})')
+except Exception as _e:
+    logger.error(f'Startup check failed: {_e}')
+
 INIT_CASH, COST_RATE = 1.0, 0.0003
 DB_PATH = os.getenv("DATABASE_PATH", "/data/trendrod.db")
 CONFIG_PATH = os.getenv("CONFIG_PATH", "/data/trendrod_portfolios.json")
@@ -30,11 +41,18 @@ _schedules = []  # [{id, time, enabled}]
 import sqlite3
 
 def _db():
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    c = sqlite3.connect(DB_PATH)
-    c.execute("CREATE TABLE IF NOT EXISTS idx(sym TEXT,dt TEXT,o REAL,c REAL,h REAL,l REAL,v REAL,PRIMARY KEY(sym,dt))")
-    c.commit()
-    return c
+    try:
+        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+        c = sqlite3.connect(DB_PATH, timeout=5)
+        c.execute('CREATE TABLE IF NOT EXISTS idx(sym TEXT,dt TEXT,o REAL,c REAL,h REAL,l REAL,v REAL,PRIMARY KEY(sym,dt))')
+        c.commit()
+        return c
+    except sqlite3.OperationalError as e:
+        logger.error(f'sqlite3 cannot open {DB_PATH}: {e}')
+        return None
+    except Exception as e:
+        logger.error(f'_db unexpected: {e}')
+        return None
 
 def db_latest(sym):
     r = _db().execute("SELECT max(dt) FROM idx WHERE sym=?",(sym,)).fetchone()

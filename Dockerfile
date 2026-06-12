@@ -19,9 +19,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ARG HTTP_PROXY=
 COPY requirements.txt .
 RUN if [ -n "$HTTP_PROXY" ]; then \
-      pip install --no-cache-dir --proxy="$HTTP_PROXY" -r requirements.txt; \
+      pip install --no-cache-dir --proxy="$HTTP_PROXY" \
+        -i https://mirrors.aliyun.com/pypi/simple/ \
+        --trusted-host mirrors.aliyun.com \
+        -r requirements.txt; \
     else \
-      pip install --no-cache-dir -r requirements.txt; \
+      pip install --no-cache-dir \
+        -i https://mirrors.aliyun.com/pypi/simple/ \
+        --trusted-host mirrors.aliyun.com \
+        -r requirements.txt; \
     fi
 # H13: 末尾再次声明以清空默认值, 避免泄漏到后续层 / 镜像元数据
 ARG HTTP_PROXY=
