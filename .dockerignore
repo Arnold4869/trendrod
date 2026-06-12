@@ -1,0 +1,12 @@
+*.bak
+*.working
+*.tmp
+__pycache__
+*.pyc
+.git
+.gitignore
+Dockerfile
+docker-compose.yaml
+.dockerignore
+*.md
+data/

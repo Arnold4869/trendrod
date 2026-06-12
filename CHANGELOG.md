@@ -1,0 +1,110 @@
+## 0.1.7 ✅ (2026-05-24) — 生产可用
+
+### 修复
+- **前端 `addIndex()` 截断 name 到4字符**：搜索添加指数时 `name.slice(0, 4)` 把"中证1000"传成"中证1"，后端再截10字符变成"中证1"，已改为发完整 name
+- **数据库截断名称**：sh000852 名称为 `'中证10'`（4字符截断残留），已修复为 `'中证1000'`
+
+## 0.1.6 ✅ (2026-05-24) — 生产可用
+
+### 修复
+- **top-N 多持仓显示**：后端 `compute()` `current_holding` 原来只返回 entry_price 最高的1个标的，改为返回按 entry_price 降序排列的所有持仓列表
+- **止损 marker 坐标 bug**：`stopLossOffsetPlugin` 中 `ctx2.rect(x, y, w, h)` 参数顺序写反（y/x 颠倒），导致方块画在图表可见区域外，已修复
+
+### 技术
+- 后端：`holding` 变量改为 `h`（列表），按 `entry_prices` 降序排列后逐个 append
+- 前端：持有卡片改为 `for` 循环渲染，支持 top_n > 1 时显示多个持仓卡片
+
+## 0.1.5 ✅ (2026-05-24) — 生产可用
+
+### 修复
+- **topNInput 缺失**：前端 HTML 缺少"前N"输入框，导致 `updateWSum()` 抛出 TypeError，页面加载失败
+- **标的名称截断阈值**：从 `name[:8]` 扩大至 `name[:10]`，避免科创50、创业板50等较长名称被截断
+- **数据库名称修正**：沪深30→沪深300、创业板5→创业板50、中证10→中证1000、中证50→中证500
+
+### 技术
+- 补齐缺失的 `topNInput` HTML 元素（id="topNInput"，位于权重求和后）
+
+## 0.1.0 ✅ (2026-05-24) — 生产可用
+
+### 新增
+- **三动量权重配置**：支持 5天/22天/60天 权重独立配置（0.0~1.0），前端实时显示求和校验（绿色=1.0，红色≠1.0）
+- **Top-N 持仓支持**：`top_n` 参数（默认1，最大5）+ `weight_ratios` 不等比例分配（50/30/20 等），后端 `compute()` 重构支持多标的差量调仓
+- **动量权重持久化**：组合配置新增 `mom_weights` 字段，创建/复制/切换组合时均恢复权重输入框状态
+
+### 修复
+- **轮动记录买入行显示完整 pnl**：修复 in-loop backfill 逻辑，连续开仓（买入→调仓）时 pnl_pct 正确回填
+- **止损标的同天再买回**：新增 `stopped_out_today` 集合，阻止止损触发后同一标的被立刻买回（177→0）
+- **止损 marker 偏移**：引入 `stopLossOffsetPlugin`，同天止损+不同标的买入时止损方块往下偏移 8px 避免重叠
+- **pool-chip/rot-name 截断**：CSS 加 `max-width: 130px`、`min-width: 0`（flex 子元素默认 min-width:auto 阻止截断生效）
+- **所有 fetch 请求禁用缓存**：加上 `?_=` + Date.now() 和 `{ cache: 'no-store' }`
+- **`/` 路由 HTML 响应加 Cache-Control**：后端 `no-cache, no-store, must-revalidate, max-age=0`
+
+### 技术
+- 后端 `compute()` 重构：top_N + weight_ratios 参数、最小持有期过滤（N-d array guard）
+- `api_create_portfolio`/`api_update_portfolio`/`_recompute_cache` 均透传 `mom_weights`、`top_n`、`weight_ratios`
+- 前端 `switchTo()` 修复双重 `if (pf)` 语法错误（第一块代码无效导致参数未加载）
+- `updateWSum()` 扩展：读取 topNInput 动态显示/隐藏比例输入框，调用 `updateWRSum()`
+
+## 0.0.27 ✅ (2026-05-23) — 生产可用
+
+### 新增
+- **基准对比**：API 支持 `?benchmark=sh000300` 参数，返回沪深300等基准指数净值序列
+  - 缓存自动包含基准数据，首次请求触发计算
+  - `/api/refresh` 同样支持 benchmark 参数
+- **前端基准展示**：
+  - 控制栏新增基准选择下拉框（沪深300/上证50/创业板指/中证500）
+  - 图表叠加基准虚线（灰色，`borderDash: [5,3]`）
+  - 指标卡新增"超额收益(vs基准)"卡片，含基准累计收益
+- **图表渐变动态配色**：收益为正时红色渐变，为负时绿色渐变
+- **年度收益分解**：新增"年度收益"区块，横向柱状图展示分年涨跌
+- **回撤区域高亮**：图表回撤区间半透明红色色块标记
+- **骨架屏**：替代 loading 转圈，页面加载显示卡片/图表/持仓占位
+- **数值滚动动画**：指标卡数字 count-up 动画（ease-out 600ms）
+
+### 优化
+- **轮动历史加持仓天数**：卖出信号旁显示持仓天数
+- **持仓卡片增强**：显示入场日期 + 持仓天数 + 动量值
+
+### 技术
+- 新增 `_benchmark_nav()` 函数：独立加载基准指数并计算累计收益净值
+- `compute()` 返回值增加 `bench_nav`（等权组合基准）
+- `_recompute_cache()` 接受 `bench_sym` 参数
+- 前端 `dsets` 数组动态构建，条件性追加基准数据集
+
+# TrendRod 更新日志
+
+## 0.0.12 (2026-05-23)
+
+### 调试
+- **净值曲线空白排查**：移除 `backgroundColor` 逐点数组（可能与 Chart.js v4 `fill:true` 不兼容），改为纯线条
+- **增加 Chart 初始化 try-catch**：初始化失败时显示具体错误信息，便于定位
+
+## 0.0.8 (2026-05-23)
+
+### 修复
+- **指标卡缺失**：补回总收益、年化收益两张卡片（之前误删）
+- **新增 4 张指标卡**：卡玛比率、调仓胜率、轮动次数（含年均）、交易天数（含年数）
+- **8 卡双行布局**：桌面端 4×2 网格，配色顶条
+
+## 0.0.7 (2026-05-23)
+
+### 修复
+- **前端页面白屏/卡加载**：修复 `index.html` 被截断（缺 `loadPortfolios()` 启动调用、净值图表、持仓展示、轮动历史渲染代码），页面恢复正常
+
+## 0.0.6 (2026-05-23)
+
+### 新增
+- **Backtrader 回测引擎** (`backtest_bt.py`)：独立于主服务的回测工具，支持命令行调用
+  - 用法：`python backtest_bt.py --portfolio default --start_date 2020-01-01`
+  - 支持 `--output json` 输出，兼容前端展示
+  - 参数对齐：`--mom_period` `--ma_period` `--min_hold` `--stop_loss`
+
+### 技术
+- 数据持久化：SQLite → CSV 写入 `/data/bt_feeds/`，可复用
+- 订单执行：`set_coc(True)` 收盘价成交，与向量化引擎一致
+- pnl_pct 统一用价格差计算 `(exit_price - entry_price) / entry_price × 100`
+- 新增依赖：`backtrader>=1.9`
+
+### 修复
+- 两阶段 close→buy 同 bar 执行，避免 Margin 状态错误
+- 买入数量使用 `math.floor()` 防止浮点精度超限

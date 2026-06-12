@@ -1,0 +1,1933 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>TrendRod — 指数动量轮动</title>
+  <script src="/static/chart.umd.min.js"></script>
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    :root, [data-theme="light-blue"] {
+      --bg: #f0f4f8; --card: #ffffff; --card-hover: #e8eef4;
+      --green: #0066cc; --green-dim: rgba(0,102,204,0.10);
+      --red: #cc2200; --red-dim: rgba(204,34,0,0.10);
+      --orange: #e67e22;
+      --text: #1a202c; --text-dim: #4a5568; --text-muted: #a0aec0;
+      --border: #d0dce8; --radius: 12px; --radius-sm: 8px;
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
+    }
+    [data-theme="warm"] {
+      --bg: #f5f0e8; --card: #fffdf8; --card-hover: #f0ebe0;
+      --green: #2d7a4f; --green-dim: rgba(45,122,79,0.12);
+      --red: #c0392b; --red-dim: rgba(192,57,43,0.12);
+      --orange: #d35400;
+      --text: #2c2416; --text-dim: #6b5c4a; --text-muted: #b0a090;
+      --border: #ddd0c0; --radius: 12px; --radius-sm: 8px;
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
+    }
+    [data-theme="dark-gray"] {
+      --bg: #1a1a1a; --card: #252525; --card-hover: #2d2d2d;
+      --green: #4ade80; --green-dim: rgba(74,222,128,0.12);
+      --red: #f87171; --red-dim: rgba(248,113,113,0.12);
+      --orange: #fb923c;
+      --text: #e5e5e5; --text-dim: #a0a0a0; --text-muted: #666666;
+      --border: #333333; --radius: 12px; --radius-sm: 8px;
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
+    }
+    [data-theme="starry"] {
+      --bg: #0a0a1a; --card: #12122a; --card-hover: #1a1a3a;
+      --green: #60a5fa; --green-dim: rgba(96,165,250,0.12);
+      --red: #f472b6; --red-dim: rgba(244,114,182,0.12);
+      --orange: #fbbf24;
+      --text: #e0e7ff; --text-dim: #8090b0; --text-muted: #5060a0;
+      --border: #1e2040; --radius: 12px; --radius-sm: 8px;
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
+    }
+    html, body { height:100%; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      background: var(--bg); color: var(--text);
+      -webkit-font-smoothing: antialiased;
+      padding-bottom: var(--safe-bottom);
+    }
+    .header {
+      position: sticky; top: 0; z-index: 100;
+      background: var(--bg);
+      backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+      padding: 12px 16px; display: flex; align-items: center; justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+    }
+    .header h1 { font-size: 16px; font-weight: 600; }
+    .header .update-time { font-size: 11px; color: var(--text-dim); }
+    .btn-refresh {
+      background: var(--card); border: none; border-radius: 8px;
+      color: var(--text); font-size: 18px; width: 36px; height: 36px;
+      cursor: pointer; display: flex; align-items: center; justify-content: center;
+      transition: transform 0.2s;
+    }
+    .btn-refresh:active { transform: scale(0.9); }
+    .btn-refresh.spinning { animation: spin 1s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .container { max-width: 800px; margin: 0 auto; padding: 12px 14px 80px; }
+
+    .loading-overlay { text-align: center; padding: 60px 0; color: var(--text-dim); }
+    .spinner-big {
+      width: 36px; height: 36px; margin: 0 auto 12px;
+      border: 3px solid var(--text-muted); border-top-color: var(--green);
+      border-radius: 50%; animation: spin 0.8s linear infinite;
+    }
+
+    /* 组合选择器 */
+    .pf-bar-wrap { display: flex; align-items: center; border-bottom: 1px solid var(--border); padding: 6px 14px; gap: 4px; }
+    .pf-bar {
+      display: flex; gap: 6px; overflow-x: auto; padding: 4px 0;
+      -webkit-overflow-scrolling: touch; scrollbar-width: none; flex: 1; align-items: center;
+    }
+    .pf-gear { background:none;border:none;color:var(--text-muted);font-size:18px;cursor:pointer;padding:0 8px;border-radius:6px;flex-shrink:0; }
+.pf-gear:hover { background:var(--card);color:var(--text); }
+
+.pf-bar::-webkit-scrollbar { display: none; }
+    .pf-tab {
+      flex-shrink: 0; padding: 5px 14px; border-radius: 20px;
+      font-size: 13px; font-weight: 500; cursor: pointer;
+      background: var(--card); color: var(--text-dim);
+      border: 1px solid var(--border); white-space: nowrap;
+      transition: all 0.15s;
+    }
+    .pf-tab.active { background: var(--green-dim); color: var(--green); border-color: var(--green); }
+    .pf-tab.add { border-style: dashed; color: var(--text-muted); font-size: 16px; padding: 5px 12px; }
+
+    /* 标的标签栏 + 搜索同行 */
+    .pool-bar-row { display: flex; align-items: center; gap: 6px; padding: 4px 14px; border-bottom: 1px solid var(--border); }
+    .pool-bar { display: flex; gap: 6px; overflow-x: auto; flex: 1; padding: 0; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+
+/* 标的标签栏 */
+    .pool-chip {
+      flex-shrink: 0; padding: 4px 12px; border-radius: 14px;
+      font-size: 12px; font-weight: 500; cursor: default;
+      background: var(--card); color: var(--text-dim);
+      border: 1px solid var(--border);
+      display: flex; align-items: center; gap: 5px;
+      max-width: 120px; overflow: hidden;
+      white-space: nowrap; text-overflow: ellipsis;
+    }
+    .pool-chip .chip-x { font-size: 10px; opacity: 0.4; cursor: pointer; }
+    .pool-chip .chip-x:hover { opacity: 1; color: var(--red); }
+    .pool-chip.add { border-style: dashed; cursor: pointer; color: var(--text-muted); }
+
+    /* 周期 + 搜索行 */
+    .ctl-row {
+      display: flex; gap: 8px; padding: 6px 14px; align-items: center;
+      border-bottom: 1px solid var(--border); flex-wrap: wrap;
+    }
+    .ctl-label { font-size: 11px; color: var(--text-dim); white-space: nowrap; }
+    .theme-switcher { display: flex; gap: 4px; align-items: center; margin-left: 12px; }
+    .theme-btn { background: none; border: 1px solid var(--border); border-radius: 6px; color: var(--text-muted); font-size: 14px; cursor: pointer; padding: 4px 7px; line-height: 1; transition: all 0.15s; }
+    .theme-btn:hover { background: var(--card-hover); color: var(--text); }
+    [data-theme="light-blue"] .theme-btn[onclick*="light-blue"],
+    [data-theme="warm"] .theme-btn[onclick*="warm"],
+    [data-theme="dark-gray"] .theme-btn[onclick*="dark-gray"],
+    [data-theme="starry"] .theme-btn[onclick*="starry"] { background: var(--green-dim); color: var(--green); border-color: var(--green); }
+    .ctl-input {
+      width: 56px; padding: 5px 8px; font-size: 13px; text-align: center;
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text); outline: none;
+    }
+    .ctl-input:focus { border-color: var(--green); }
+    .ctl-input-weight {
+      width: 44px; padding: 5px 4px; font-size: 12px; text-align: center;
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text); outline: none;
+    }
+    .ctl-input-weight:focus { border-color: var(--orange); }
+    .ctl-btn {
+      background: var(--green); border: none; border-radius: 6px;
+      color: var(--bg); font-size: 12px; font-weight: 600;
+      padding: 5px 12px; cursor: pointer; white-space: nowrap;
+    }
+    .ctl-btn:disabled { opacity: 0.5; }
+    .ctl-del {
+      background: none; border: 1px solid var(--red); border-radius: 6px;
+      color: var(--red); font-size: 11px; padding: 4px 10px; cursor: pointer;
+      margin-left: auto; white-space: nowrap;
+    }
+    .search-wrap { position: relative; flex: 0 0 120px; width: 120px; }
+    .search-input {
+      width: 100%; padding: 4px 8px; font-size: 12px;
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text); outline: none;
+    }
+    .search-input:focus { border-color: var(--green); }
+    .search-drop {
+      position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 8px; max-height: 180px; overflow-y: auto; display: none;
+    }
+    .search-drop.show { display: block; }
+    .search-item {
+      padding: 8px 10px; font-size: 12px; cursor: pointer;
+      display: flex; justify-content: space-between; border-bottom: 1px solid var(--border);
+    }
+    .search-item:last-child { border-bottom: none; }
+    .search-item:hover { background: var(--card-hover); }
+    .search-item .si-sym { color: var(--text-dim); }
+    .search-item .si-name { color: var(--text); }
+
+    #holdingArea { padding: 6px 14px; border-bottom: 1px solid var(--border); background: var(--card); min-height: 0; }
+    .msg-bar {
+      display: none; text-align: center; font-size: 12px; padding: 6px 14px;
+    }
+
+    /* 指标卡 */
+    .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px; }
+    .stat-card {
+      background: var(--card); border-radius: var(--radius); padding: 14px 16px;
+      position: relative; overflow: hidden;
+    }
+    .stat-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; }
+    .stat-card.return::before { background: var(--green); }
+    .stat-card.annual::before { background: var(--orange); }
+    .stat-card.drawdown::before { background: var(--red); }
+    .stat-card.sharpe::before { background: #6c5ce7; }
+    .stat-card.calmar::before { background: #00d2ff; }
+    .stat-card.winrate::before { background: #ffa502; }
+    .stat-card.rotations::before { background: #a29bfe; }
+    .stat-card.trading::before { background: #636e72; }
+    .stat-label { font-size: 11px; color: var(--text-dim); margin-bottom: 4px; }
+    .stat-value { font-size: 22px; font-weight: 700; }
+    .stat-value.up { color: var(--red); }
+    .stat-value.down { color: var(--green); }
+
+    .section { margin-bottom: 14px; }
+    .section-title { font-size: 15px; font-weight: 600; margin-bottom: 10px; }
+
+    /* 日期区间选择器 */
+    .date-bar {
+      display: flex; gap: 6px; padding: 4px 0 8px;
+      -webkit-overflow-scrolling: touch; align-items: center;
+      position: relative; overflow: visible;
+    }
+    .date-bar::-webkit-scrollbar { display: none; }
+    .date-bar-row { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+    .date-label { font-size: 11px; color: var(--text-dim); margin-right: 4px; flex-shrink: 0; }
+    .date-tab {
+      flex-shrink: 0; padding: 4px 10px; border-radius: 14px;
+      font-size: 11px; cursor: pointer; white-space: nowrap;
+      background: var(--card); color: var(--text-dim);
+      border: 1px solid var(--border); transition: all 0.15s;
+    }
+    .date-tab.active { background: var(--green-dim); color: var(--green); border-color: var(--green); }
+    .date-tab.all { font-weight: 600; }
+    .date-tab.specials-toggle { color: var(--text-muted); border-style: dashed; }
+    .date-tab.preset-tab { font-size: 10px; padding: 3px 8px; }
+    .presets-dropdown {
+      position: absolute;
+      top: calc(100% + 4px);
+      left: 0;
+      background: #1e2130;
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+      z-index: 1000;
+      min-width: 140px;
+      padding: 6px 0;
+    }
+    .presets-dropdown.hidden { display: none; }
+    .presets-dropdown .preset-item {
+      display: block;
+      padding: 8px 14px;
+      font-size: 12px;
+      color: #a8b1c2;
+      cursor: pointer;
+      border-radius: 4px;
+      margin: 2px 6px;
+      white-space: nowrap;
+    }
+    .presets-dropdown .preset-item:hover { background: rgba(255,255,255,0.08); color: #e8eaf0; }
+    .presets-dropdown .preset-item.active { color: #00e5a0; font-weight: 600; }
+    .date-input {
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: 14px; color: var(--text); font-size: 11px;
+      padding: 4px 8px; outline: none; flex-shrink: 0;
+      width: 120px; font-family: inherit;
+    }
+    .date-input:focus { border-color: var(--green); }
+    .date-input::-webkit-calendar-picker-indicator { filter: invert(0.7); }
+    .interval-badge {
+      font-size: 10px; color: var(--orange); margin-left: 8px;
+      background: rgba(255,165,2,0.1); padding: 2px 8px; border-radius: 8px;
+      display: none;
+    }
+    .interval-badge.show { display: inline; }
+
+    .chart-card { background: #1a2c38; border-radius: var(--radius); padding: 12px; border: 1px solid rgba(36,59,71,0.4); }
+    .chart-wrap { height: 260px; position: relative; }
+    .chart-wrap canvas { width: 100% !important; }
+
+    .holding-card {
+      background: var(--card); border-radius: var(--radius); padding: 12px;
+      display: flex; align-items: center; gap: 16px;
+    }
+    .holding-tag {
+      width: 2.8rem; height: 2.8rem; border-radius: 0.6rem;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.54rem; font-weight: 700; flex-shrink: 0;
+      background: var(--green-dim); color: var(--green);
+    }
+    .holding-tag.empty { background: var(--red-dim); color: var(--red); }
+    .holding-tag.up { background: var(--red-dim); color: var(--red); }
+    .holding-tag.down { background: var(--green-dim); color: var(--green); }
+    .holding-info { flex: 1; min-width: 0; }
+    .holding-name { font-size: 13px; font-weight: 600; }
+    .holding-meta { font-size: 10px; color: var(--text-dim); margin-top: 2px; }
+    .holding-pnl { text-align: right; flex-shrink: 0; }
+    .holding-pnl-val { font-size: 15px; font-weight: 700; }
+    .holding-pnl-val.up { color: var(--red); }
+    .holding-pnl-val.down { color: var(--green); }
+    .holding-pnl-label { font-size: 10px; color: var(--text-dim); }
+
+    .rot-item {
+      background: var(--card); border-radius: var(--radius-sm); padding: 12px 14px;
+      display: flex; align-items: center; gap: 10px; margin-bottom: 6px; font-size: 13px;
+    }
+    .rot-date { color: var(--text-dim); font-size: 11px; min-width: 80px; }
+    .rot-badge {
+      padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 600;
+      min-width: 52px; text-align: center;
+    }
+    .rot-badge.buy { background: #d4ecf7; color: #000; }
+    .rot-badge.sell { background: var(--red-dim); color: #000; }
+    .rot-name {
+      font-weight: 500; flex: 1; min-width: 0;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .rot-pnl { font-size: 12px; font-weight: 600; white-space: nowrap; }
+    .rot-pnl.up { color: var(--red); }
+    .rot-pnl.down { color: var(--green); }
+    .empty-state { text-align: center; padding: 30px; color: var(--text-dim); font-size: 13px; }
+
+    /* Skeleton loading */
+    .skeleton { background: linear-gradient(90deg, var(--card) 25%, var(--card-hover) 50%, var(--card) 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; border-radius: var(--radius); }
+    @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+    .sk-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px; }
+    .sk-card { height: 72px; }
+    .sk-chart { height: 260px; margin-bottom: 14px; }
+    .sk-hold { height: 64px; margin-bottom: 14px; }
+    .sk-rot { height: 220px; }
+    @media (min-width: 768px) { .sk-stats { grid-template-columns: repeat(4, 1fr); } .sk-chart { height: 320px; } }
+
+    /* Yearly returns */
+    .yearly-section { margin-bottom: 14px; }
+    .yearly-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; font-size: 13px; }
+    .yearly-label { min-width: 38px; color: var(--text-dim); font-size: 12px; }
+    .yearly-bar-wrap { flex: 1; height: 22px; background: var(--bg); border-radius: 6px; overflow: hidden; position: relative; }
+    .yearly-bar { height: 100%; border-radius: 6px; min-width: 3px; transition: width 0.6s ease; }
+    .yearly-bar.up { background: var(--red); }
+    .yearly-bar.down { background: var(--green); }
+    .yearly-val { min-width: 52px; text-align: right; font-weight: 600; font-size: 12px; }
+    .yearly-val.up { color: var(--red); }
+    .yearly-val.down { color: var(--green); }
+
+    /* ── 定时刷新 ── */
+    .sch-row {
+      display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+      padding: 6px 0; font-size: 12px;
+    }
+    .sch-label { color: var(--text-dim); white-space: nowrap; }
+    .sch-chip {
+      display: inline-flex; align-items: center; gap: 4px;
+      background: var(--green-dim); color: var(--green);
+      border: 1px solid var(--green); border-radius: 14px;
+      padding: 2px 10px; font-size: 12px; font-weight: 500;
+    }
+    .sch-chip-del {
+      background: none; border: none; color: var(--green); cursor: pointer;
+      font-size: 14px; line-height: 1; padding: 0; opacity: 0.7;
+    }
+    .sch-chip-del:hover { opacity: 1; }
+    .sch-input { width: 64px; padding: 3px 6px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 12px; outline: none; }
+    .sch-input:focus { border-color: var(--green); }
+    .sch-add-btn {
+      padding: 3px 10px; border-radius: 6px; border: 1px solid var(--green);
+      background: var(--green-dim); color: var(--green); font-size: 12px; cursor: pointer;
+    }
+    .sch-add-btn:hover { background: rgba(0,229,160,0.18); }
+    .sch-log-btn {
+      margin-left: auto; padding: 3px 10px; border-radius: 6px;
+      border: 1px solid var(--border); background: none; color: var(--text-dim);
+      font-size: 12px; cursor: pointer;
+    }
+    .sch-log-btn:hover { border-color: var(--green); color: var(--green); }
+    .sch-log-area {
+      display: none; font-size: 11px; color: var(--text-dim);
+      background: var(--bg); border-radius: 6px; padding: 8px;
+      max-height: 120px; overflow-y: auto; margin-top: 4px;
+    }
+    .sch-log-area.show { display: block; }
+    .log-item { padding: 2px 0; border-bottom: 1px solid var(--border); }
+    .log-item:last-child { border-bottom: none; }
+    .log-ok { color: var(--green); }
+    .log-fail { color: var(--red); }
+
+    /* Holding days in rotation */
+    .rot-card-grid {
+      display: flex; flex-direction: column; gap: 0;
+      width: 100%;
+    }
+    .rot-card {
+      background: var(--card); border-radius: var(--radius-sm);
+      padding: 14px 16px;
+      display: flex; flex-direction: column; gap: 4px;
+      border-left: 3px solid transparent;
+    }
+    .rot-card.up { border-left-color: var(--red); }
+    .rot-card.down { border-left-color: var(--green); }
+    .rot-card-date { font-size: 11px; color: var(--text-dim); }
+    .rot-card-held { font-size: 14px; color: var(--text); font-weight: 600; }
+    .rot-card-pnl { font-size: 16px; font-weight: 700; margin-top: 2px; }
+    .rot-card-pnl.up { color: var(--red); }
+    .rot-card-pnl.down { color: var(--green); }
+    .rot-card-pnl { color: var(--text-dim); }
+    /* 调仓连接器：垂直方向在卡片之间 */
+    .rot-adj {
+      display: flex; flex-direction: column; align-items: center;
+      padding: 8px 0 4px;
+    }
+    .rot-adj-label {
+      font-size: 11px; color: var(--text-muted);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      max-width: 100%; text-align: center; line-height: 1.4;
+      margin-bottom: 4px;
+    }
+    .rot-adj-arrow-wrap {
+      display: flex; flex-direction: column; align-items: center;
+    }
+    .rot-adj-arrow-line {
+      width: 1px; height: 12px;
+      background: var(--border);
+    }
+    .rot-adj-arrow-head {
+      width: 0; height: 0;
+      border-left: 4px solid transparent;
+      border-right: 4px solid transparent;
+      border-top: 6px solid var(--text-dim);
+    }
+    .rot-adj-sell { color: var(--green); }
+    .rot-adj-buy { color: var(--red); }
+    .rot-days { font-size: 10px; color: var(--text-muted); min-width: 44px; text-align: right; }
+    .rot-arrow { color: var(--text-muted); margin: 0 4px; }
+
+    @media (min-width: 768px) {
+      .stats-grid { grid-template-columns: repeat(4, 1fr); }
+      .container { padding: 16px 20px 40px; }
+      .chart-wrap { height: 320px; }
+    }
+  
+    /* ── 组合管理抽屉 ── */
+    .pf-drawer {
+      position: fixed; top: 0; right: -380px; width: 360px; height: 100%;
+      background: var(--card); border-left: 1px solid var(--border);
+      z-index: 200; transition: right 0.28s cubic-bezier(.4,0,.2,1);
+      display: flex; flex-direction: column;
+    }
+    .pf-drawer.open { right: 0; }
+    .pf-drawer-backdrop {
+      position: fixed; inset: 0; background: rgba(0,0,0,0);
+      z-index: 199; display: none; pointer-events: none;
+    }
+    .pf-drawer-backdrop.show { display: block; pointer-events: all; }
+    .pf-drawer-hd {
+      padding: 14px 16px; display: flex; align-items: center; justify-content: space-between;
+      border-bottom: 1px solid var(--border); flex-shrink: 0;
+    }
+    .pf-drawer-hd h2 { font-size: 15px; font-weight: 600; }
+    .pf-drawer-close {
+      background: none; border: none; color: var(--text-dim); font-size: 20px;
+      cursor: pointer; padding: 4px 8px; border-radius: 6px; line-height: 1;
+    }
+    .pf-drawer-close:hover { background: var(--card-hover); color: var(--text); }
+    .pf-drawer-body { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .pf-drawer-foot { padding: 12px 16px; border-top: 1px solid var(--border); flex-shrink: 0; }
+    .pf-drawer-add { width: 100%; padding: 10px; border-radius: 8px; background: var(--green-dim); color: var(--green); border: 1px solid var(--green); font-size: 14px; cursor: pointer; font-weight: 500; }
+    .pf-drawer-add:hover { background: rgba(0,229,160,0.18); }
+    /* 组合卡片 */
+    .pfcARD {
+      background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+      padding: 12px; cursor: grab; user-select: none; transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .pfcARD:active { cursor: grabbing; }
+    .pfcARD.drag-over { border-color: var(--green); box-shadow: 0 0 0 2px rgba(0,229,160,0.2); }
+    .pfcARD.dragging { opacity: 0.4; }
+    .pfcARD-hd { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .pfcARD-drag { color: var(--text-muted); font-size: 14px; flex-shrink: 0; cursor: grab; }
+    .pfcARD-name {
+      flex: 1; font-size: 14px; font-weight: 600; color: var(--text);
+      background: none; border: none; border-bottom: 1px solid transparent;
+      outline: none; padding: 1px 2px; min-width: 0;
+      transition: border-color 0.15s;
+    }
+    .pfcARD-name:focus { border-bottom-color: var(--green); }
+    .pfcARD-name-edit { background: none; border: 1px solid var(--border); border-radius: 4px; color: var(--text); font-size: 14px; padding: 1px 6px; outline: none; flex: 1; min-width: 0; }
+    .pfcARD-name-edit:focus { border-color: var(--green); }
+    .pfcARD-info { font-size: 11px; color: var(--text-dim); margin-bottom: 8px; padding-left: 22px; }
+    .pfcARD-btns { display: flex; gap: 6px; padding-left: 22px; }
+    .pfcARD-btn {
+      font-size: 11px; padding: 3px 10px; border-radius: 4px; cursor: pointer;
+      border: 1px solid var(--border); background: var(--card); color: var(--text-dim);
+      transition: all 0.15s;
+    }
+    .pfcARD-btn:hover { border-color: var(--green); color: var(--green); }
+    .pfcARD-btn.danger:hover { border-color: var(--red); color: var(--red); }
+    .pfcARD.is-active { border-color: var(--green); background: rgba(0,229,160,0.05); }
+
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <h1>TrendRod</h1>
+    <div class="update-time" id="updateTime">等待数据加载…</div>
+  </div>
+  <button class="btn-refresh" id="refreshBtn" data-action="doRefresh">⟳</button>
+  <div class="theme-switcher">
+    <button class="theme-btn" data-action="setTheme" data-id="light-blue" title="浅蓝白">◐</button>
+    <button class="theme-btn" data-action="setTheme" data-id="warm" title="暖色">◑</button>
+    <button class="theme-btn" data-action="setTheme" data-id="dark-gray" title="深灰">◒</button>
+    <button class="theme-btn" data-action="setTheme" data-id="starry" title="星空">◓</button>
+  </div>
+</div>
+
+<!-- 组合选择器 -->
+<div class="pf-bar-wrap"><div id="pfBar"></div><button class="pf-gear" id="pfGearBtn" data-action="togglePfDrawer" title="管理组合">⚙️</button></div>
+
+<!-- 标的标签栏 + 搜索同行 -->
+<div class="pool-bar-row"><div class="pool-bar" id="poolBar"></div><div class="search-wrap"><input class="search-input" id="searchInput" placeholder="搜索标的代码/名称…" autocomplete="off"><div class="search-drop" id="searchDrop"></div></div></div>
+
+<!-- 当前持仓（显示在标的栏下方） -->
+<div id="holdingArea"></div>
+
+<!-- 周期 + 参数配置 -->
+<div class="ctl-row">
+  <span class="ctl-label">动量5</span>
+  <input class="ctl-input-weight" id="w5Input" type="number" min="0" max="1" step="0.1" value="0.0" placeholder="5天" data-input-action="updateWSum">
+  <span class="ctl-label">动量22</span>
+  <input class="ctl-input-weight" id="w22Input" type="number" min="0" max="1" step="0.1" value="1.0" placeholder="22天" data-input-action="updateWSum">
+  <span class="ctl-label">动量60</span>
+  <input class="ctl-input-weight" id="w60Input" type="number" min="0" max="1" step="0.1" value="0.0" placeholder="60天" data-input-action="updateWSum">
+  <span id="wSum" style="font-size:11px;color:var(--text-dim);margin-right:8px">=1.0</span>
+  <span class="ctl-label">前N</span>
+  <input class="ctl-input" id="topNInput" type="number" min="1" max="5" value="1" style="width:40px" data-input-action="updateWSum">
+  <span class="ctl-label">仓位</span>
+  <input class="ctl-input" id="wr1Input" type="number" min="0" max="100" step="5" value="100" placeholder="1位%" style="width:50px" data-input-action="updateWSum">
+  <input class="ctl-input" id="wr2Input" type="number" min="0" max="100" step="5" value="0" placeholder="2位%" style="width:50px;display:none" data-input-action="updateWSum">
+  <input class="ctl-input" id="wr3Input" type="number" min="0" max="100" step="5" value="0" placeholder="3位%" style="width:50px;display:none" data-input-action="updateWSum">
+  <input class="ctl-input" id="wr4Input" type="number" min="0" max="100" step="5" value="0" placeholder="4位%" style="width:50px;display:none" data-input-action="updateWSum">
+  <input class="ctl-input" id="wr5Input" type="number" min="0" max="100" step="5" value="0" placeholder="5位%" style="width:50px;display:none" data-input-action="updateWSum">
+  <span id="wrSum" style="font-size:11px;color:var(--text-dim);margin-right:8px"></span>
+  <span class="ctl-label">均线</span>
+  <input class="ctl-input" id="maInput" type="number" min="0" max="250" value="60" placeholder="MA">
+  <span class="ctl-label">持期</span>
+  <input class="ctl-input" id="holdInput" type="number" min="0" max="60" value="5" placeholder="天">
+  <span class="ctl-label">止损%</span>
+  <input class="ctl-input" id="stopInput" type="number" min="0" max="50" value="0" placeholder="%">
+  <button class="ctl-btn" data-action="saveParams">保存</button>
+  <span class="ctl-label">基准</span>
+  <select class="ctl-input" id="benchSelect" data-change-action="onBenchChange" style="width:auto;min-width:80px">
+    <option value="">无</option>
+    <option value="sh000016">上证50</option>
+    <option value="sz399006">创业板指</option>
+    <option value="sh000012">国债指数</option>
+  </select>
+  <span id="benchReturnDisplay" style="font-size:11px;color:var(--text-dim);margin-left:6px;white-space:nowrap"></span>
+  <button class="ctl-del" id="delPfBtn" data-action="deletePortfolio" style="display:none">删组合</button>
+</div>
+
+<!-- 定时刷新行 -->
+<div class="sch-row" id="schRow">
+  <span class="sch-label">定时刷新</span>
+  <div id="schChips" style="display:contents"></div>
+  <input class="sch-input" id="schTimeInput" type="time" step="60" value="15:30">
+  <button class="sch-add-btn" data-action="addSchedule">添加</button>
+  <button class="sch-log-btn" data-action="toggleSchLog">更新日志</button>
+  <button class="sch-log-btn" data-action="runScheduleNow" title="立即刷新">▶ 立即刷新</button>
+</div>
+<div class="sch-log-area" id="schLogArea"></div>
+
+
+<!-- 组合管理抽屉 -->
+<div class="pf-drawer-backdrop" id="pfDrawerBackdrop" data-action="togglePfDrawer"></div>
+<div class="pf-drawer" id="pfDrawer">
+  <div class="pf-drawer-hd">
+    <h2>管理组合</h2>
+    <button class="pf-drawer-close" data-action="togglePfDrawer">✕</button>
+  </div>
+  <div class="pf-drawer-body" id="pfDrawerBody"></div>
+  <div class="pf-drawer-foot">
+    <button class="pf-drawer-add" data-action="createPortfolio">+ 新建组合</button>
+  </div>
+</div>
+<div class="msg-bar" id="msgBar"></div>
+
+<div class="container">
+  <div id="loading">
+    <div class="sk-stats"><div class="skeleton sk-card"></div><div class="skeleton sk-card"></div><div class="skeleton sk-card"></div><div class="skeleton sk-card"></div></div>
+    <div class="skeleton sk-chart"></div>
+    <div class="skeleton sk-hold"></div>
+    <div class="skeleton sk-rot"></div>
+  </div>
+  <div id="mainContent" style="display:none;">
+    <div class="stats-grid" id="statsGrid"></div>
+    <!-- 日期区间选择 -->
+    <div class="date-bar" id="dateBar">
+      <span class="date-label">区间</span>
+      <input type="date" class="date-input" id="datePicker" data-change-action="onDatePick">
+      <span class="date-tab all active" data-action="setDateRange" data-id="all">全部</span>
+    </div>
+    <div class="section">
+      <div class="section-title">净值曲线 <span class="chart-toggle" id="chartToggle" data-action="toggleChartMode" style="font-size:11px;color:var(--text-dim);cursor:pointer;margin-left:8px;border:1px solid var(--border);border-radius:4px;padding:2px 8px">切换收益率</span></div>
+      <div class="chart-card"><div class="chart-wrap"><canvas id="navChart"></canvas></div></div>
+    </div>
+    <div class="section yearly-section" id="yearlySection" style="display:none">
+      <div class="section-title">年度收益</div>
+      <div id="yearlyArea"></div>
+    </div>
+    <div class="section">
+      <div class="section-title">轮动历史</div>
+      <div id="rotationArea"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+function setTheme(name) {
+  document.documentElement.setAttribute('data-theme', name);
+  localStorage.setItem('trendrod-theme', name);
+}
+(function() {
+  var saved = localStorage.getItem('trendrod-theme');
+  if (saved) document.documentElement.setAttribute('data-theme', saved);
+})();
+</script>
+<script>
+// 全局错误捕获
+window.onerror = function(msg, url, line, col, err) {
+  var el = document.getElementById('loading');
+  if (el) el.innerHTML = '<div style="color:#ff4757;padding:20px;text-align:center;font-size:13px">JS错误: ' + msg + '<br><small>行 ' + line + '</small></div>';
+};
+
+// 集中式事件委托（C6: 防御 XSS — 替换分散在各处的 onclick/oninput/onchange/onblur）
+// 在 HTML 里用 data-action / data-input-action / data-change-action / data-blur-action
+// 声明要调用的 window 全局函数名，通过单个 document 监听器统一派发，避免内联 JS。
+function _jsDelegate(dataAttr, evtName) {
+  document.addEventListener(evtName, function(e) {
+    var t = e.target.closest('[' + dataAttr + ']');
+    if (!t) return;
+    var fn = window[t.getAttribute(dataAttr)];
+    if (typeof fn !== 'function') return;
+    fn(t.getAttribute('data-id'), e, t);
+  });
+}
+_jsDelegate('data-action', 'click');
+_jsDelegate('data-input-action', 'input');
+_jsDelegate('data-change-action', 'change');
+_jsDelegate('data-blur-action', 'blur');
+
+// onkeydown 特例：.js-rename-input 上 Enter→blur, Escape→cancel（与原行为一致）
+document.addEventListener('keydown', function(e) {
+  var t = e.target.closest && e.target.closest('.js-rename-input');
+  if (!t) return;
+  if (e.key === 'Enter') t.blur();
+  else if (e.key === 'Escape') { try { t.cancel(); } catch (_) {} }
+});
+
+// 包装：复合操作（多个原 inline handler 合并为一个函数）
+function focusSearchInput() { document.getElementById('searchInput').focus(); }
+function viewPf(id) { switchTo(id); togglePfDrawer(); }
+function stopAndRemoveIndex(sym, event) {
+  if (event && event.stopPropagation) event.stopPropagation();
+  removeIndex(sym);
+}
+let navChart = null;
+let activePf = 'default';
+let portfolios = [];
+let searchTimer = null;
+let filteredRot = [];
+let currentHolding = null;
+let chartMode = 'nav'; // 'nav' or 'return'
+let activeBench = '';  // benchmark symbol
+let benchNavData = null;
+let benchSym = '';
+
+// ─── HTML 转义（C5: 防御 XSS） ──────────────────
+// 把用户控制的字符串安全地嵌入 HTML。所有 renderXxx 函数在拼接 innerHTML 前
+// 必须先调用本函数包装 name / id / sym 等字段。null/undefined → 空串。
+function escHtml(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function fmtPct(v) { return (v >= 0 ? '+' : '') + v.toFixed(1) + '%'; }
+function pctClass(v) { return v >= 0 ? 'up' : 'down'; }
+
+// Count-up animation
+function animateValue(el, start, end, duration, formatter) {
+  if (!formatter) formatter = function(v) { return v.toFixed(1) + '%'; };
+  var startTime = null;
+  function step(timestamp) {
+    if (!startTime) startTime = timestamp;
+    var progress = Math.min((timestamp - startTime) / duration, 1);
+    var eased = 1 - Math.pow(1 - progress, 3); // ease-out
+    var current = start + (end - start) * eased;
+    el.textContent = formatter(current);
+    if (progress < 1) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+
+// ─── 消息提示 ──────────────────────────────
+function showMsg(text, color) {
+  var el = document.getElementById('msgBar');
+  el.textContent = text; el.style.display = 'block';
+  el.style.color = color === 'red' ? 'var(--red)' : 'var(--green)';
+  setTimeout(function() { el.style.display = 'none'; }, 3000);
+}
+
+// ─── 组合管理 ──────────────────────────────
+async function loadPortfolios() {
+  try {
+    var r = await fetch('/api/portfolios?_=' + Date.now(), { cache: 'no-store' });
+    var d = await r.json();
+    portfolios = d.portfolios || [];
+    if (!portfolios.length) {
+      // 创建默认
+      await fetch('/api/portfolios', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: 'default', name: '默认组合', window: 22, indices: [], top_n: 1, weight_ratios: [1.0] })
+      });
+      return loadPortfolios();
+    }
+    renderPfBar();
+    if (!portfolios.find(function(p) { return p.id === activePf; })) {
+      activePf = portfolios[0].id;
+    }
+    await switchTo(activePf);
+  } catch (e) { showMsg('加载组合失败', 'red'); }
+}
+
+function renderPfBar() {
+  var bar = document.getElementById('pfBar');
+  var html = '';
+  for (var i = 0; i < portfolios.length; i++) {
+    var p = portfolios[i];
+    html += '<span class="pf-tab' + (p.id === activePf ? ' active' : '') + '" data-action="switchTo" data-id="' + escHtml(p.id) + '">' + escHtml(p.name) + '</span>';
+  }
+  html += '<span class="pf-tab add" data-action="createPortfolio">+</span>';
+  bar.innerHTML = html;
+}
+
+function onBenchChange() {
+  activeBench = document.getElementById('benchSelect').value;
+  loadStatus();
+}
+async function switchTo(pfid) {
+  activePf = pfid;
+  renderPfBar();
+  // 更新窗口输入
+  var pf = portfolios.find(function(p) { return p.id === pfid; });
+  if (pf) {
+    var mw = pf.mom_weights || [0.0, 1.0, 0.0];
+    document.getElementById('w5Input').value = mw[0];
+    document.getElementById('w22Input').value = mw[1];
+    document.getElementById('w60Input').value = mw[2];
+    var topN = pf.top_n || 1;
+    document.getElementById('topNInput').value = topN;
+    var wr = pf.weight_ratios || [1.0];
+    var wrIds = ['wr1Input','wr2Input','wr3Input','wr4Input','wr5Input'];
+    for (var i = 0; i < wrIds.length; i++) {
+      var el = document.getElementById(wrIds[i]);
+      if (el) {
+        el.value = wr[i] != null ? Math.round(wr[i] * 100) : 0;
+        el.style.display = i < topN ? '' : 'none';
+      }
+    }
+    updateWSum();
+    document.getElementById('maInput').value = pf.ma_period != null ? pf.ma_period : 60;
+    document.getElementById('holdInput').value = pf.min_hold_days != null ? pf.min_hold_days : 5;
+    document.getElementById('stopInput').value = pf.stop_loss != null ? pf.stop_loss : 0;
+  }
+  // 显示/隐藏删除按钮
+  document.getElementById('delPfBtn').style.display = portfolios.length > 1 ? '' : 'none';
+  // 加载数据
+  await loadStatus();
+  renderPoolBar();
+}
+
+async function createPortfolio() {
+  var name = prompt('组合名称（英文ID）：');
+  if (!name) return;
+  var pfid = name.replace(/[^a-z0-9_-]/gi, '').toLowerCase() || 'pf' + Date.now();
+  try {
+    var r = await fetch('/api/portfolios', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: pfid, name: name, window: 22, indices: [] })
+    });
+    var d = await r.json();
+    if (!d.ok) { showMsg(d.message, 'red'); return; }
+    portfolios = (await (await fetch('/api/portfolios')).json()).portfolios;
+    renderPfBar();
+    await switchTo(pfid);
+    showMsg('已创建组合: ' + name, 'green');
+  } catch (e) { showMsg('创建失败', 'red'); }
+}
+
+async function deletePortfolio() {
+  if (!confirm('删除组合 ' + activePf + '？数据不丢，仅删配置。')) return;
+  try {
+    var r = await fetch('/api/portfolios/' + encodeURIComponent(activePf), { method: 'DELETE' });
+    var d = await r.json();
+    if (!d.ok) { showMsg(d.message, 'red'); return; }
+    portfolios = (await (await fetch('/api/portfolios')).json()).portfolios;
+    activePf = portfolios[0].id;
+    renderPfBar();
+    await switchTo(activePf);
+    showMsg('已删除', 'green');
+  } catch (e) { showMsg('删除失败', 'red'); }
+}
+
+// 实时显示权重之和
+function updateWSum() {
+  var w5 = parseFloat(document.getElementById('w5Input').value) || 0;
+  var w22 = parseFloat(document.getElementById('w22Input').value) || 0;
+  var w60 = parseFloat(document.getElementById('w60Input').value) || 0;
+  var total = w5 + w22 + w60;
+  var el = document.getElementById('wSum');
+  el.textContent = '=' + total.toFixed(1);
+  el.style.color = Math.abs(total - 1) < 0.01 ? 'var(--green)' : 'var(--red)';
+  var topN = parseInt(document.getElementById('topNInput').value) || 1;
+  var wrIds = ['wr1Input','wr2Input','wr3Input','wr4Input','wr5Input'];
+  for (var i = 0; i < wrIds.length; i++) {
+    var el2 = document.getElementById(wrIds[i]);
+    if (el2) el2.style.display = i < topN ? '' : 'none';
+  }
+  updateWRSum();
+}
+
+function updateWRSum() {
+  var topN = parseInt(document.getElementById('topNInput').value) || 1;
+  var wrIds = ['wr1Input','wr2Input','wr3Input','wr4Input','wr5Input'];
+  var total = 0;
+  for (var i = 0; i < topN; i++) {
+    total += parseFloat(document.getElementById(wrIds[i]).value) || 0;
+  }
+  var el = document.getElementById('wrSum');
+  if (el) {
+    if (topN <= 1) { el.textContent = ''; }
+    else if (Math.abs(total - 100) < 1) { el.textContent = ''; el.style.color = 'var(--green)'; }
+    else { el.textContent = total + '%≠100'; el.style.color = 'var(--red)'; }
+  }
+}
+
+async function saveParams() {
+  var w5 = parseFloat(document.getElementById('w5Input').value) || 0;
+  var w22 = parseFloat(document.getElementById('w22Input').value) || 0;
+  var w60 = parseFloat(document.getElementById('w60Input').value) || 0;
+  var total = w5 + w22 + w60;
+  if (Math.abs(total - 1) > 0.01) {
+    showMsg('权重之和必须等于1.0（当前=' + total.toFixed(2) + '）', 'red');
+    return;
+  }
+  var ma = parseInt(document.getElementById('maInput').value);
+  var hold = parseInt(document.getElementById('holdInput').value);
+  var stop = parseInt(document.getElementById('stopInput').value);
+  var topN = parseInt(document.getElementById('topNInput').value) || 1;
+  if (isNaN(ma)) ma = 60; if (isNaN(hold)) hold = 5; if (isNaN(stop)) stop = 0;
+  if (ma < 0) ma = 0; if (ma > 250) ma = 250;
+  if (hold < 0) hold = 0; if (hold > 60) hold = 60;
+  if (stop < 0) stop = 0; if (stop > 50) stop = 50;
+  var wrIds = ['wr1Input','wr2Input','wr3Input','wr4Input','wr5Input'];
+  var weight_ratios = [];
+  for (var i = 0; i < topN; i++) {
+    weight_ratios.push((parseFloat(document.getElementById(wrIds[i]).value) || 0) / 100);
+  }
+  if (topN > 1) {
+    var wrTotal = weight_ratios.reduce(function(a,b){return a+b;}, 0);
+    if (Math.abs(wrTotal - 1.0) > 0.01) {
+      showMsg('仓位比例和必须=100%（当前=' + Math.round(wrTotal*100) + '%）', 'red');
+      return;
+    }
+  }
+  try {
+    var r = await fetch('/api/portfolios/' + encodeURIComponent(activePf), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mom_weights: [w5, w22, w60], top_n: topN, weight_ratios: weight_ratios, ma_period: ma, min_hold_days: hold, stop_loss: stop })
+    });
+    var d = await r.json();
+    if (!d.ok) { showMsg(d.message, 'red'); return; }
+    showMsg('已更新: 前N=' + topN + ' 动量=' + w5 + '/' + w22 + '/' + w60 + ' 均线=' + (ma || '关') + ' 持期=' + hold + '天 止损=' + (stop || '关') + '%', 'green');
+    loadStatus();
+  } catch (e) { showMsg('更新失败', 'red'); }
+}
+
+// ─── 标的池标签栏 ───────────────────────────
+async function renderPoolBar() {
+  var pf = portfolios.find(function(p) { return p.id === activePf; });
+  if (!pf) return;
+  var indices = pf.indices || [];
+  var bar = document.getElementById('poolBar');
+  var html = '';
+  for (var i = 0; i < indices.length; i++) {
+    var idx = indices[i];
+    html += '<span class="pool-chip">' + escHtml(idx.name) +
+      '<span class="chip-x" data-action="stopAndRemoveIndex" data-id="' + escHtml(idx.sym) + '">✕</span></span>';
+  }
+  html += '<span class="pool-chip add" data-action="focusSearchInput">+ 标的</span>';
+  bar.innerHTML = html;
+}
+
+
+// ─── 组合管理抽屉 ───────────────────────────────────────────
+function togglePfDrawer() {
+  var d = document.getElementById('pfDrawer');
+  var b = document.getElementById('pfDrawerBackdrop');
+  var open = d.classList.toggle('open');
+  b.classList.toggle('show', open);
+  if (open) renderPfDrawer();
+}
+function renderPfDrawer() {
+  var body = document.getElementById('pfDrawerBody');
+  var html = '';
+  for (var i = 0; i < portfolios.length; i++) {
+    var p = portfolios[i];
+    var isAct = p.id === activePf;
+    html += '<div class="pfcARD' + (isAct ? ' is-active' : '') + '" draggable="true" data-id="' + escHtml(p.id) + '" ondragstart="onPfDragStart(event)" ondragover="onPfDragOver(event)" ondragleave="onPfDragLeave(event)" ondrop="onPfDrop(event)" ondragend="onPfDragEnd(event)" id="pfcARD-' + escHtml(p.id) + '">' +
+      '<div class="pfcARD-hd">' +
+        '<span class="pfcARD-drag">☰</span>' +
+        '<span class="pfcARD-name" id="pfcName-' + escHtml(p.id) + '" data-id="' + escHtml(p.id) + '" data-action="startRenamePf">' + escHtml(p.name) + '</span>' +
+        '<input class="pfcARD-name-edit js-rename-input" id="pfcNameInput-' + escHtml(p.id) + '" style="display:none" value="' + escHtml(p.name) + '" data-id="' + escHtml(p.id) + '" data-blur-action="commitRenamePf"> ' +
+      '</div>' +
+      '<div class="pfcARD-info">ID: ' + escHtml(p.id) + ' &nbsp;|&nbsp; 动量: ' + (p.mom_weights||[0,1,0]).join('/') + ' &nbsp;|&nbsp; 标的: ' + (p.indices||[]).length + '个</div>' +
+      '<div class="pfcARD-btns">' +
+        '<button class="pfcARD-btn" data-id="' + escHtml(p.id) + '" data-action="duplicatePf">复制</button>' +
+        '<button class="pfcARD-btn" data-id="' + escHtml(p.id) + '" data-action="viewPf">查看</button>' +
+        (portfolios.length > 1 ? '<button class="pfcARD-btn danger" data-id="' + escHtml(p.id) + '" data-action="deletePfFromDrawer">删除</button>' : '') +
+      '</div>' +
+    '</div>';
+  }
+  body.innerHTML = html;
+}
+function startRenamePf(id) {
+  var nameEl = document.getElementById('pfcName-' + id);
+  var inputEl = document.getElementById('pfcNameInput-' + id);
+  nameEl.style.display = 'none';
+  inputEl.style.display = '';
+  inputEl.focus();
+  inputEl.select();
+}
+function commitRenamePf(id) {
+  var inputEl = document.getElementById('pfcNameInput-' + id);
+  var newName = inputEl.value.trim();
+  if (!newName) { inputEl.value = portfolios.find(function(p){return p.id===id;}).name; }
+  else {
+    var pf = portfolios.find(function(p){return p.id===id;});
+    pf.name = newName;
+    fetch('/api/portfolios/' + encodeURIComponent(id), {
+      method: 'PUT', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({name: newName})
+    });
+    renderPfBar();
+    renderPfDrawer();
+  }
+  document.getElementById('pfcName-' + id).style.display = '';
+  inputEl.style.display = 'none';
+}
+async function duplicatePf(id) {
+  var pf = portfolios.find(function(p){return p.id===id;});
+  if (!pf) return;
+  var newId = id + '_copy';
+  var newName = pf.name + ' (副本)';
+  try {
+    await fetch('/api/portfolios', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({id: newId, name: newName, mom_weights: pf.mom_weights||[0.0,1.0,0.0], top_n: pf.top_n||1, weight_ratios: pf.weight_ratios||[1.0], indices: pf.indices||[], ma_period: pf.ma_period, min_hold_days: pf.min_hold_days, stop_loss: pf.stop_loss})
+    });
+    portfolios = (await (await fetch('/api/portfolios')).json()).portfolios;
+    renderPfBar();
+    renderPfDrawer();
+    showMsg('已复制为: ' + newName, 'green');
+  } catch(e) { showMsg('复制失败', 'red'); }
+}
+async function deletePfFromDrawer(id) {
+  if (!confirm('删除组合「' + (portfolios.find(function(p){return p.id===id;})||{}).name + '」？')) return;
+  if (portfolios.length <= 1) { showMsg('至少保留一个组合', 'red'); return; }
+  try {
+    await fetch('/api/portfolios/' + encodeURIComponent(id), {method:'DELETE'});
+    portfolios = (await (await fetch('/api/portfolios')).json()).portfolios;
+    if (activePf === id) {
+      activePf = portfolios[0].id;
+    }
+    renderPfBar();
+    renderPfDrawer();
+    loadStatus();
+    showMsg('已删除', 'green');
+  } catch(e) { showMsg('删除失败', 'red'); }
+}
+// ─── 拖拽排序 ──────────────────────────────────────────────
+var dragSrcId = null;
+function onPfDragStart(e) {
+  dragSrcId = e.currentTarget.dataset.id;
+  e.currentTarget.classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'move';
+}
+function onPfDragOver(e) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  var el = e.currentTarget;
+  if (el.dataset.id !== dragSrcId) el.classList.add('drag-over');
+}
+function onPfDragLeave(e) {
+  e.currentTarget.classList.remove('drag-over');
+}
+async function onPfDrop(e) {
+  e.preventDefault();
+  var el = e.currentTarget;
+  el.classList.remove('drag-over');
+  var tgtId = el.dataset.id;
+  if (dragSrcId === tgtId) return;
+  var srcIdx = portfolios.findIndex(function(p){return p.id===dragSrcId;});
+  var tgtIdx = portfolios.findIndex(function(p){return p.id===tgtId;});
+  var item = portfolios.splice(srcIdx, 1)[0];
+  portfolios.splice(tgtIdx, 0, item);
+  renderPfDrawer();
+  // 保存顺序到后端
+  var order = portfolios.map(function(p){return p.id;});
+  await fetch('/api/portfolios/reorder', {
+    method: 'PUT', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({order: order})
+  });
+  renderPfBar();
+}
+function onPfDragEnd(e) {
+  e.currentTarget.classList.remove('dragging');
+  dragSrcId = null;
+}
+
+
+// ─── 搜索添加标的 ───────────────────────────
+document.getElementById('searchInput').addEventListener('input', function() {
+  clearTimeout(searchTimer);
+  var q = this.value.trim();
+  if (q.length < 1) { document.getElementById('searchDrop').classList.remove('show'); return; }
+  searchTimer = setTimeout(function() { doSearch(q); }, 300);
+});
+
+async function doSearch(q) {
+  try {
+    var r = await fetch('/api/search_indices?q=' + encodeURIComponent(q));
+    var d = await r.json();
+    var results = d.results || [];
+    var drop = document.getElementById('searchDrop');
+    if (!results.length) {
+      drop.innerHTML = '<div class="search-item"><span class="si-name" style="color:var(--text-dim)">无结果，可直接输入代码添加</span></div>';
+    } else {
+      drop.innerHTML = results.map(function(item) {
+        return '<div class="search-item" data-sym="' + escHtml(item.sym) + '" data-name="' + escHtml(item.name) + '" data-action="addIndex">' +
+          '<span class="si-name">' + item.name + '</span>' +
+          '<span class="si-sym">' + item.sym + '</span></div>';
+      }).join('');
+    }
+    drop.classList.add('show');
+  } catch (e) {}
+}
+
+document.addEventListener('click', function(e) {
+  if (!e.target.closest('.search-wrap')) {
+    document.getElementById('searchDrop').classList.remove('show');
+  }
+});
+
+async function addIndex(sym, name) {
+  document.getElementById('searchDrop').classList.remove('show');
+  document.getElementById('searchInput').value = '';
+  if (!name) name = sym;
+  try {
+    var r = await fetch('/api/portfolios/' + encodeURIComponent(activePf) + '/indices?sym=' +
+      encodeURIComponent(sym) + '&name=' + encodeURIComponent(name), { method: 'POST' });
+    var d = await r.json();
+    if (!d.ok) { showMsg(d.message, 'red'); return; }
+    showMsg('已添加 ' + name + '（' + (d.new_count || 0) + '条）', 'green');
+    // 刷新组合列表
+    portfolios = (await (await fetch('/api/portfolios')).json()).portfolios;
+    renderPoolBar();
+    loadStatus();
+  } catch (e) { showMsg('添加失败', 'red'); }
+}
+
+async function removeIndex(sym) {
+  try {
+    var r = await fetch('/api/portfolios/' + encodeURIComponent(activePf) + '/indices/' + encodeURIComponent(sym), { method: 'DELETE' });
+    var d = await r.json();
+    if (!d.ok) { showMsg(d.message, 'red'); return; }
+    portfolios = (await (await fetch('/api/portfolios')).json()).portfolios;
+    renderPoolBar();
+    loadStatus();
+    showMsg('已删除', 'green');
+  } catch (e) { showMsg('删除失败', 'red'); }
+}
+
+// ─── 数据加载 ──────────────────────────────
+async function doRefresh() {
+  var btn = document.getElementById('refreshBtn');
+  btn.classList.add('spinning');
+  document.getElementById('loading').style.display = 'block';
+  document.getElementById('mainContent').style.display = 'none';
+  document.getElementById('yearlySection').style.display = 'none';
+  try {
+    var r = await fetch('/api/refresh?portfolio=' + encodeURIComponent(activePf) + '&_=' + Date.now(), { method: 'POST', cache: 'no-store' });
+    var j = await r.json();
+    if (!j.ok) { alert('刷新失败: ' + (j.message || '')); btn.classList.remove('spinning'); return; }
+  } catch (e) { alert('请求失败: ' + e.message); btn.classList.remove('spinning'); return; }
+  await loadStatus();
+  btn.classList.remove('spinning');
+}
+
+async function loadStatus() {
+  try {
+    var url = '/api/status?portfolio=' + encodeURIComponent(activePf);
+    if (activeBench) url += '&benchmark=' + encodeURIComponent(activeBench);
+    url += '&_=' + Date.now();
+    var r = await fetch(url, { cache: 'no-store' });
+    var j = await r.json();
+    if (!j.ok) {
+      document.getElementById('loading').innerHTML =
+        '<div style="text-align:center;padding:60px;color:var(--text-dim);">暂无数据<br><small style="color:var(--red)">' +
+        (j.message || '请添加标的后点击刷新') + '</small></div>';
+      document.getElementById('yearlySection').style.display = 'none';
+      return;
+    }
+    renderAll(j);
+  } catch (e) {
+    document.getElementById('loading').innerHTML =
+      '<div style="text-align:center;padding:60px;color:var(--red);">请求失败: ' + e.message + '</div>';
+  }
+}
+
+// 全局数据
+var fullNavData = [];
+var fullRotData = [];
+var activeDateRange = '#1m';
+var presetsExpanded = false;
+var PRESETS = [
+  {id: '2024-09-24', label: '924'},
+  {id: '2021-02-18', label: '21顶'},
+  {id: '2020-01-23', label: '疫情'},
+  {id: '2015-06-12', label: '15顶'}
+];
+var SHORTCUTS = [
+  {id: '#1w', label: '近1周'},
+  {id: '#1m', label: '近1月'},
+  {id: '#3m', label: '近3月'}
+];
+// Human-readable label lookup for interval badge display
+var RANGE_LABEL_MAP = {'#1w':'近1周','#1m':'近1月','#3m':'近3月','2026-01-01':'2026年至今'};
+
+function buildDateBar(nav) {
+  var bar = document.getElementById('dateBar');
+  var lastDate = nav.length ? nav[nav.length - 1].date : null;
+  var oneYrAgo = lastDate ? (function() {
+    var d = new Date(lastDate); d.setFullYear(d.getFullYear() - 1);
+    return d.toISOString().split('T')[0];
+  })() : null;
+  var html = '<div class="date-bar-row">' +
+    '<span class="date-label">区间</span>' +
+    '<input type="date" class="date-input" id="datePicker" data-change-action="onDatePick">' +
+    '<span class="date-tab' + (activeDateRange === '#1w' ? ' active' : '') + '" data-id="#1w" data-action="setDateRange">近1周</span>' +
+    '<span class="date-tab' + (activeDateRange === '#1m' ? ' active' : '') + '" data-id="#1m" data-action="setDateRange">近1月</span>' +
+    '<span class="date-tab' + (activeDateRange === '#3m' ? ' active' : '') + '" data-id="#3m" data-action="setDateRange">近3月</span>';
+  if (lastDate && lastDate >= '2026-01-01') {
+    html += '<span class="date-tab' + (activeDateRange === '2026-01-01' ? ' active' : '') + '" data-id="2026-01-01" data-action="setDateRange">2026年</span>';
+  }
+  if (oneYrAgo) {
+    html += '<span class="date-tab' + (activeDateRange === oneYrAgo ? ' active' : '') + '" data-id="' + oneYrAgo + '" data-action="setDateRange">近1年</span>';
+  }
+  html += '<span class="date-tab all' + (activeDateRange === 'all' ? ' active' : '') + '" data-id="all" data-action="setDateRange">全部</span>';
+  html += '<span class="date-tab specials-toggle" data-action="togglePresets">特殊时点 ▾</span>';
+  html += '<div class="presets-dropdown hidden" id="presetsDropdown">';
+  for (var k = 0; k < PRESETS.length; k++) {
+    var p = PRESETS[k];
+    html += '<div class="preset-item' + (activeDateRange === p.id ? ' active' : '') + '" data-id="' + p.id + '" data-action="setDateRange">' + p.label + '</div>';
+  }
+  html += '</div>';
+  html += '</div>';
+  bar.innerHTML = html;
+  var dp = document.getElementById('datePicker');
+  if (nav.length) {
+    dp.min = nav[0].date;
+    dp.max = nav[nav.length - 1].date;
+  }
+}
+
+function togglePresets(e) {
+  e.stopPropagation();
+  var dd = document.getElementById('presetsDropdown');
+  if (!dd) return;
+  var wasHidden = dd.classList.contains('hidden');
+  dd.classList.toggle('hidden');
+  if (wasHidden) {
+    document.addEventListener('click', closePresetsDropdown, { once: true });
+  }
+}
+function closePresetsDropdown(e) {
+  var dd = document.getElementById('presetsDropdown');
+  if (dd && !dd.contains(e.target)) dd.classList.add('hidden');
+}
+
+function onDatePick() {
+  var v = document.getElementById('datePicker').value;
+  if (v) {
+    setDateRange(v);
+    // 取消所有 tab 的 active
+    var tabs = document.querySelectorAll('.date-tab');
+    for (var i = 0; i < tabs.length; i++) tabs[i].classList.remove('active');
+  }
+}
+
+function setDateRange(range) {
+  activeDateRange = range;
+  buildDateBar(fullNavData);
+  filterAndRender(range);
+  renderBenchDisplay();
+}
+
+function filterAndRender(range) {
+  var nav = fullNavData;
+  var rot = fullRotData;
+  var cutoff = range;
+  if (range !== 'all') {
+    // Resolve shortcut ranges to actual dates
+    if (range === '#3m' || range === '#1m' || range === '#1w') {
+      var last = nav.length ? nav[nav.length - 1].date : null;
+      if (!last) { cutoff = 'all'; }
+      else {
+        var d = new Date(last);
+        if (range === '#3m') d.setMonth(d.getMonth() - 3);
+        else if (range === '#1m') d.setMonth(d.getMonth() - 1);
+        else if (range === '#1w') d.setDate(d.getDate() - 7);
+        cutoff = d.toISOString().split('T')[0];
+      }
+    }
+    nav = nav.filter(function(p) { return p.date >= cutoff; });
+    rot = rot.filter(function(r) { return r.date >= cutoff; });
+  }
+  filteredRot = rot;
+  if (!nav.length) return;
+  var startVal = nav[0].value;
+  var endVal = nav[nav.length - 1].value;
+  var tr = (endVal / startVal - 1) * 100;
+  var days = nav.length;
+  var yrs = days / 252;
+  var ar = yrs > 0 ? (Math.pow(1 + tr / 100, 1 / yrs) - 1) * 100 : 0;
+  var peakVal = nav[0].value;
+  var peakDate = nav[0].date;
+  var mdd = 0;
+  var mddStart = nav[0].date;
+  var mddEnd = nav[0].date;
+  for (var i = 1; i < nav.length; i++) {
+    if (nav[i].value > peakVal) {
+      peakVal = nav[i].value;
+      peakDate = nav[i].date;
+    }
+    var dd = (nav[i].value / peakVal - 1) * 100;
+    if (dd < mdd) {
+      mdd = dd;
+      mddStart = peakDate;
+      mddEnd = nav[i].date;
+    }
+  }
+  mdd = Math.abs(mdd);
+  var mddDays = 0;
+  if (mdd > 0) {
+    mddDays = Math.round((new Date(mddEnd) - new Date(mddStart)) / (1000 * 60 * 60 * 24)) + 1;
+  }
+  var returns = [];
+  for (var j = 1; j < nav.length; j++) {
+    returns.push(nav[j].value / nav[j-1].value - 1);
+  }
+  var meanRet = returns.reduce(function(a,b) { return a + b; }, 0) / returns.length;
+  var variance = returns.reduce(function(a,b) { return a + Math.pow(b - meanRet, 2); }, 0) / returns.length;
+  var stdDev = Math.sqrt(variance);
+  var shrp = stdDev > 0 ? meanRet / stdDev * Math.sqrt(252) : 0;
+  var sw = rot.length;
+  var annRot = yrs > 0 ? (sw / yrs).toFixed(1) : 0;
+  var winCnt = 0, totalCnt = 0;
+  for (var k = 0; k < rot.length; k++) {
+    var pnl = rot[k].pnl_pct;
+    if (pnl != null) { totalCnt++; if (pnl > 0) winCnt++; }
+  }
+  var winRate = totalCnt > 0 ? (winCnt / totalCnt * 100) : 0;
+  var calmar = mdd > 0 ? ar / mdd : 0;
+  var intervalLabel = '';
+  if (range !== 'all') {
+  var rangeText = RANGE_LABEL_MAP[range] || range;
+    intervalLabel = '<span class="interval-badge show">' + rangeText + '起</span>';
+  }
+  var mddDetail = '';
+  if (mdd > 0) {
+    mddDetail = '<div style=\"font-size:10px;color:var(--text-dim);margin-top:2px\">' + mddStart + ' → ' + mddEnd + '</div>' +
+      '<div style=\"font-size:10px;color:var(--text-muted)\">持续 ' + mddDays + ' 天</div>';
+  }
+  document.getElementById('statsGrid').innerHTML =
+    '<div class=\"stat-card return\"><div class=\"stat-label\">总收益' + intervalLabel + '</div><div class=\"stat-value ' + pctClass(tr) + '\">' + fmtPct(tr) + '</div></div>' +
+    '<div class=\"stat-card annual\"><div class=\"stat-label\">年化收益</div><div class=\"stat-value ' + pctClass(ar) + '\">' + fmtPct(ar) + '</div></div>' +
+    '<div class=\"stat-card drawdown\"><div class=\"stat-label\">最大回撤</div><div class=\"stat-value\" style=\"color:var(--green)\">' + mdd.toFixed(1) + '%</div>' + mddDetail + '</div>' +
+    '<div class=\"stat-card sharpe\"><div class=\"stat-label\">夏普比率</div><div class=\"stat-value\">' + shrp.toFixed(2) + '</div></div>' +
+    '<div class=\"stat-card calmar\"><div class=\"stat-label\">卡玛比率</div><div class=\"stat-value\">' + calmar.toFixed(2) + '</div></div>' +
+    '<div class=\"stat-card winrate\"><div class=\"stat-label\">调仓胜率</div><div class=\"stat-value\">' + winRate.toFixed(0) + '%</div></div>' +
+    '<div class=\"stat-card rotations\"><div class=\"stat-label\">轮动次数</div><div class=\"stat-value\">' + sw + '<span style=\"font-size:12px;color:var(--text-dim)\"> /' + annRot + '次/年</span></div></div>' +
+    '<div class=\"stat-card trading\"><div class=\"stat-label\">交易天数</div><div class=\"stat-value\">' + days + '<span style=\"font-size:12px;color:var(--text-dim)\"> /' + yrs.toFixed(1) + '年</span></div></div>' +
+    (benchNavData && benchNavData.length > 0 ? (function() {
+      var rangeStart = nav[0].date;
+      var benchFiltered = benchNavData.filter(function(p) { return p.date >= rangeStart; });
+      if (benchFiltered.length < 2) return '';
+      var bFirst = benchFiltered[0].value, bLast = benchFiltered[benchFiltered.length-1].value;
+      var bRet = (bLast / bFirst - 1) * 100;
+      var excess = tr - bRet;
+      return '<div class="stat-card" style="--card-accent:#7a8b98"><div class="stat-label">超额收益(vs基准)</div><div class="stat-value ' + pctClass(excess) + '">' + fmtPct(excess) + '</div><div style="font-size:10px;color:var(--text-dim);margin-top:2px">基准 ' + fmtPct(bRet) + '</div></div>';
+    })() : '');
+  // Annual returns
+  var yearlyHtml = '';
+  var yearlyData = [];
+  var yrMap = {};
+  for (var yi = 0; yi < nav.length; yi++) {
+    var yr = nav[yi].date.substring(0, 4);
+    if (!yrMap[yr]) { yrMap[yr] = { first: nav[yi].value, last: nav[yi].value }; }
+    yrMap[yr].last = nav[yi].value;
+  }
+  var yrKeys = Object.keys(yrMap).sort();
+  var maxAbsRet = 0;
+  for (var yk = 0; yk < yrKeys.length; yk++) {
+    var d = yrMap[yrKeys[yk]];
+    var ret = (d.last / d.first - 1) * 100;
+    yearlyData.push({ year: yrKeys[yk], ret: ret });
+    maxAbsRet = Math.max(maxAbsRet, Math.abs(ret));
+  }
+  if (yearlyData.length > 0) {
+    var barMax = maxAbsRet * 1.2 || 50;
+    for (var yb = yearlyData.length - 1; yb >= 0; yb--) {
+      var yd = yearlyData[yb];
+      var isUp = yd.ret >= 0;
+      var barWidth = Math.abs(yd.ret) / barMax * 100;
+      yearlyHtml += '<div class=\"yearly-row\"><span class=\"yearly-label\">' + yd.year + '</span>' +
+        '<div class=\"yearly-bar-wrap\"><div class=\"yearly-bar ' + (isUp ? 'up' : 'down') + '\" style=\"width:' + Math.max(barWidth, 2) + '%\"></div></div>' +
+        '<span class=\"yearly-val ' + (isUp ? 'up' : 'down') + '\">' + fmtPct(yd.ret) + '</span></div>';
+    }
+  }
+  document.getElementById('yearlyArea').innerHTML = yearlyHtml || '<div class=\"empty-state\">暂无年度数据</div>';
+  document.getElementById('yearlySection').style.display = yearlyData.length > 0 ? 'block' : 'none';
+  if (navChart) { try { navChart.destroy(); } catch(e) {} }
+  var canvas = document.getElementById('navChart');
+  if (!canvas) {
+    document.getElementById('loading').style.display = 'block';
+    document.getElementById('loading').innerHTML = '<div style=\"color:#ff4757;padding:20px\">找不到 navChart canvas</div>';
+    return;
+  }
+  var ctx = canvas.getContext('2d');
+  var labels = nav.map(function(p) { return p.date; });
+  var baseVal = nav.length > 0 ? nav[0].value : 1;
+  var values = nav.map(function(p) {
+    return chartMode === 'return' ? ((p.value / baseVal - 1) * 100) : p.value;
+  });
+  var navRawValues = nav.map(function(p) { return p.value; });
+  // Compute y-axis range with padding for zoomed-in view
+  var yMin = Math.min.apply(null, values);
+  var yMax = Math.max.apply(null, values);
+  var yPad = (yMax - yMin) * 0.15;
+  var yAxisMin = chartMode === 'return' ? yMin - yPad : yMin - yPad * 0.5;
+  var yAxisMax = yMax + yPad;
+  // Build trade point lookup
+  var buyDates = {};
+  var stopDates = {};
+  var switchDates = {};
+  for (var ti = 0; ti < rot.length; ti++) {
+    var sig = rot[ti].signal;
+    if (sig.indexOf('调仓') >= 0) {
+      switchDates[rot[ti].date] = true;
+    } else if (sig.indexOf('买入') >= 0) {
+      buyDates[rot[ti].date] = true;
+    } else if (sig.indexOf('止损') >= 0) {
+      stopDates[rot[ti].date] = true;
+    } else if (sig.indexOf('空仓') >= 0 || sig.indexOf('卖出') >= 0) {
+      // 纯卖出/空仓，不处理
+    }
+  }
+  // Crosshair plugin
+  var zeroLinePlugin = {
+    id: 'zeroLine',
+    afterDraw: function(chart) {
+      if (chartMode === 'return') {
+        var ctx2 = chart.ctx;
+        var yScale = chart.scales.y;
+        var zeroY = yScale.getPixelForValue(0);
+        if (zeroY > yScale.top && zeroY < yScale.bottom) {
+          ctx2.save();
+          ctx2.beginPath();
+          ctx2.moveTo(yScale.left, zeroY);
+          ctx2.lineTo(yScale.right, zeroY);
+          ctx2.lineWidth = 1;
+          ctx2.strokeStyle = 'rgba(122,139,152,0.5)';
+          ctx2.setLineDash([]);
+          ctx2.stroke();
+          ctx2.restore();
+        }
+      }
+    }
+  };
+  var crosshairPlugin = {
+    id: 'crosshair',
+    afterDraw: function(chart) {
+      if (chart.tooltip && chart.tooltip.getActiveElements && chart.tooltip.getActiveElements().length) {
+        var ctx2 = chart.ctx;
+        var active = chart.tooltip.getActiveElements()[0];
+        var x = active.element.x;
+        var topY = chart.scales.y.top;
+        var bottomY = chart.scales.y.bottom;
+        ctx2.save();
+        ctx2.beginPath();
+        ctx2.moveTo(x, topY);
+        ctx2.lineTo(x, bottomY);
+        ctx2.lineWidth = 1;
+        ctx2.strokeStyle = 'rgba(122,139,152,0.4)';
+        ctx2.setLineDash([4, 4]);
+        ctx2.stroke();
+        ctx2.restore();
+      }
+    }
+  };
+  // 止损 marker 重绘插件：按标签（日期）对齐，标记点直接落在数据点上（无像素偏移）
+  var stopLossOffsetPlugin = {
+    id: 'stopLossOffset',
+    afterDatasetsDraw: function(chart) {
+      var stopDatasetIdx = -1, buyDatasetIdx = -1;
+      chart.data.datasets.forEach(function(ds, idx) {
+        if (ds.label === '止损') stopDatasetIdx = idx;
+        if (ds.label === '买入') buyDatasetIdx = idx;
+      });
+      if (stopDatasetIdx < 0) return;
+      var stopMeta = chart.getDatasetMeta(stopDatasetIdx);
+      var buyMeta = buyDatasetIdx >= 0 ? chart.getDatasetMeta(buyDatasetIdx) : null;
+      if (!stopMeta || stopMeta.data.length === 0) return;
+      var ctx2 = chart.ctx;
+      stopMeta.data.forEach(function(point) {
+        if (point.options && point.options.radius === 0) return;
+        // 按标签日期对齐，而非 dataset 数组下标（解决 return-rate 模式下索引错位问题）
+        var idx = (point._index !== undefined) ? point._index : stopMeta.data.indexOf(point);
+        var dateLabel = chart.data.labels[idx];
+        if (dateLabel === undefined) return;
+        // 检查同日是否也有买入 marker（按日期匹配，而非下标匹配）
+        var sameDateBuy = null;
+        if (buyMeta) {
+          for (var j = 0; j < buyMeta.data.length; j++) {
+            var bp = buyMeta.data[j];
+            var bpIdx = (bp._index !== undefined) ? bp._index : j;
+            if (chart.data.labels[bpIdx] === dateLabel &&
+                bp.options && bp.options.radius > 0) {
+              sameDateBuy = bp;
+              break;
+            }
+          }
+        }
+        if (!sameDateBuy) return; // 无冲突时由 Chart.js 自带 marker 渲染负责
+        // 直接在数据点上绘制止损方块，不做像素偏移
+        ctx2.save();
+        ctx2.beginPath();
+        ctx2.rect(point.x - 3, point.y - 3, 6, 6);
+        ctx2.fillStyle = '#00e5a0';
+        ctx2.fill();
+        ctx2.restore();
+      });
+    }
+  };
+  try {
+    navChart = new Chart(ctx, {
+    type: 'line',
+    plugins: [zeroLinePlugin, crosshairPlugin, stopLossOffsetPlugin, {
+      id: 'gradientFill',
+      beforeDatasetsDraw: function(chart) {
+        var ctx = chart.ctx;
+        var meta = chart.getDatasetMeta(0);
+        if (meta.data.length === 0) return;
+        var yScale = chart.scales.y;
+        var gradient = ctx.createLinearGradient(0, yScale.top, 0, yScale.bottom);
+        var isUp = values.length > 1 && values[values.length - 1] >= values[0];
+        var gradRgb = isUp ? '255, 71, 87' : '0, 229, 160';
+        gradient.addColorStop(0, 'rgba(' + gradRgb + ', 0.15)');
+        gradient.addColorStop(1, 'rgba(' + gradRgb + ', 0.0)');
+        ctx.save();
+        ctx.fillStyle = gradient;
+        ctx.beginPath();
+        ctx.moveTo(meta.data[0].x, yScale.bottom);
+        for (var i = 0; i < meta.data.length; i++) {
+          ctx.lineTo(meta.data[i].x, meta.data[i].y);
+        }
+        ctx.lineTo(meta.data[meta.data.length - 1].x, yScale.bottom);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
+    }, {
+      id: 'drawdownZones',
+      beforeDatasetsDraw: function(chart) {
+        var ctx = chart.ctx;
+        var meta = chart.getDatasetMeta(0);
+        if (meta.data.length === 0) return;
+        var yScale = chart.scales.y;
+        var peakVal = navRawValues[0];
+        var ddStart = 0;
+        var inDD = false;
+        ctx.save();
+        for (var i = 0; i < values.length; i++) {
+          if (navRawValues[i] > peakVal) {
+            if (inDD && i - ddStart > 5) {
+              ctx.fillStyle = 'rgba(255, 71, 87, 0.06)';
+              ctx.fillRect(meta.data[ddStart].x, yScale.top, meta.data[i-1].x - meta.data[ddStart].x, yScale.bottom - yScale.top);
+            }
+            peakVal = navRawValues[i];
+            ddStart = i;
+            inDD = false;
+          } else {
+            inDD = true;
+          }
+        }
+        if (inDD && values.length - 1 - ddStart > 5) {
+          ctx.fillStyle = 'rgba(255, 71, 87, 0.06)';
+          ctx.fillRect(meta.data[ddStart].x, yScale.top, meta.data[values.length-1].x - meta.data[ddStart].x, yScale.bottom - yScale.top);
+        }
+        ctx.restore();
+      }
+    }],
+    data: {
+      labels: labels,
+      datasets: (function() {
+        var _benchData = null;
+        if (benchNavData && benchNavData.length > 0) {
+          // Always compute as % return from filtered benchNavData start, aligned with chart date range
+          var benchBaseVal = benchNavData[0].value;
+          var _benchValues = benchNavData.map(function(p) {
+            return ((p.value / benchBaseVal - 1) * 100);
+          });
+          _benchData = {
+            label: '基准(' + (benchSym || '') + ')',
+            data: _benchValues,
+            borderColor: '#7a8b98',
+            backgroundColor: 'transparent',
+            borderWidth: 1.5,
+            borderDash: [5, 3],
+            pointRadius: 0,
+            fill: false,
+            tension: 0.1,
+            yAxisID: 'y2'
+          };
+        }
+        var _dsets = [
+          {
+            label: '净值',
+            data: values,
+            borderColor: '#ff4757',
+            borderWidth: 2,
+            pointRadius: 0,
+            // fill 由 gradientFill 插件提供，避免与静态 backgroundColor 双层填充
+            fill: false,
+            tension: 0.3
+          }, {
+            label: '买入',
+            data: nav.map(function(p) {
+              return buyDates[p.date] ? (chartMode === 'return' ? ((p.value / baseVal - 1) * 100) : p.value) : null;
+            }),
+            borderColor: '#ff4757',
+            backgroundColor: '#ff4757',
+            pointRadius: nav.map(function(p) { return buyDates[p.date] ? 3 : 0; }),
+            pointBorderColor: '#ff4757',
+            pointStyle: 'circle',
+            showLine: false
+          }, {
+            label: '止损',
+            data: nav.map(function(p) {
+              return stopDates[p.date] ? (chartMode === 'return' ? ((p.value / baseVal - 1) * 100) : p.value) : null;
+            }),
+            borderColor: '#00e5a0',
+            backgroundColor: '#00e5a0',
+            pointRadius: nav.map(function(p) { return stopDates[p.date] ? 3 : 0; }),
+            pointBorderColor: '#00e5a0',
+            pointStyle: 'rect',
+            showLine: false
+          }, {
+            label: '调仓',
+            data: nav.map(function(p) {
+              return switchDates[p.date] ? (chartMode === 'return' ? ((p.value / baseVal - 1) * 100) : p.value) : null;
+            }),
+            borderColor: '#6c7adb',
+            backgroundColor: '#6c7adb',
+            pointRadius: nav.map(function(p) { return switchDates[p.date] ? 3 : 0; }),
+            pointBorderColor: '#6c7adb',
+            pointStyle: 'triangle',
+            showLine: false
+          }
+        ];
+        if (_benchData) _dsets.push(_benchData);
+        return _dsets;
+      })()
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: 'rgba(15, 25, 35, 0.95)',
+          titleColor: '#7a8b98',
+          bodyColor: '#e8edf0',
+          borderColor: '#243b47',
+          borderWidth: 1,
+          displayColors: false,
+          callbacks: { label: function(ctx) {
+            if (ctx.dataset.label === '净值') {
+              if (chartMode === 'return') {
+                return '收益率: ' + ctx.parsed.y.toFixed(2) + '%';
+              }
+              return '净值: ' + ctx.parsed.y.toFixed(4);
+            }
+            if (ctx.dataset.label === '买入') return '买入 @ ' + ctx.parsed.y.toFixed(4);
+            if (ctx.dataset.label === '调仓') return '调仓 @ ' + ctx.parsed.y.toFixed(4);
+            if (ctx.dataset.label === '止损') return '止损 @ ' + ctx.parsed.y.toFixed(4);
+            if (ctx.dataset.label === '空仓') return '空仓 @ ' + ctx.parsed.y.toFixed(4);
+            if (ctx.dataset.label && ctx.dataset.label.indexOf('基准') >= 0) {
+              return '基准: ' + ctx.parsed.y.toFixed(2) + '%';
+            }
+            return ctx.dataset.label + ': ' + ctx.parsed.y;
+          } }
+        }
+      },
+      scales: {
+        x: { ticks: { color: '#5a6b78', maxTicksLimit: 8, font: { size: 10 } }, grid: { color: 'rgba(36,59,71,0.3)', drawBorder: false } },
+        y: {
+          ticks: { color: '#5a6b78', font: { size: 10 }, callback: function(v) { return chartMode === 'return' ? v.toFixed(1) + '%' : v.toFixed(2); } },
+          grid: { color: 'rgba(36,59,71,0.3)', drawBorder: false },
+          min: yAxisMin,
+          max: yAxisMax,
+          afterBuildTicks: function(axis) {
+            if (chartMode === 'return' && axis.min < 0 && axis.max > 0) {
+              // Draw zero line will be handled by grid
+            }
+          }
+        },
+        y2: {
+          display: benchNavData && benchNavData.length > 0,
+          position: 'right',
+          ticks: { color: '#7a8b98', font: { size: 10 }, callback: function(v) { return v.toFixed(0) + '%'; } },
+          grid: { drawOnChartArea: false },
+          afterBuildTicks: function(axis) {
+            // Keep benchmark axis out of the way when not needed
+          }
+        }
+      }
+    }
+  });
+  } catch(e) {
+    document.getElementById('loading').style.display = 'block';
+    document.getElementById('loading').innerHTML = '<div style=\"color:#ff4757;padding:20px\">Chart error: ' + e.message + '<br><small>' + e.stack + '</small></div>';
+  }
+// Update holding - always show current (supports top-N multi-holding)
+    var holdingHtml = '';
+    var holdings = Array.isArray(currentHolding) ? currentHolding : (currentHolding ? [currentHolding] : []);
+    if (holdings.length > 0) {
+      for (var hi = 0; hi < holdings.length; hi++) {
+        var hld = holdings[hi];
+        var pnlClass = hld.period_return_pct >= 0 ? 'up' : 'down';
+        var holdDays = (function() {
+          if (!hld.entry_date) return '--';
+          var ed = new Date(hld.entry_date);
+          var td = new Date(nav[nav.length-1].date);
+          return Math.round((td-ed)/86400000);
+        })();
+        holdingHtml += '<div class="holding-card">' +
+          '<div class="holding-tag ' + pnlClass + '">' + hld.symbol.replace(/^sh|^sz/, '') + '</div>' +
+          '<div class="holding-info">' +
+            '<div class="holding-name">' + hld.name + '</div>' +
+            '<div class="holding-meta">' + (hld.entry_date || '') + ' 入场 | ' + holdDays + '天 | 动量 ' + (hld.momentum_latest || 0).toFixed(1) + '%</div>' +
+          '</div>' +
+          '<div class="holding-pnl">' +
+            '<div class="holding-pnl-val ' + pnlClass + '">' + fmtPct(hld.period_return_pct) + '</div>' +
+            '<div class="holding-pnl-label">持仓收益</div>' +
+          '</div>' +
+        '</div>';
+      }
+    } else if (range !== 'all') {
+      holdingHtml = '<div class="holding-card"><div class="holding-tag empty">-</div><div class="holding-info"><div class="holding-name">已筛选区间</div><div class="holding-meta">选择"全部"查看当前持仓</div></div></div>';
+    } else {
+      holdingHtml = '<div class="holding-card"><div class="holding-tag empty">空</div><div class="holding-info"><div class="holding-name">空仓</div><div class="holding-meta">等待动量信号</div></div></div>';
+    }
+    document.getElementById('holdingArea').innerHTML = holdingHtml;
+  renderRotationHistory();
+}
+function toggleChartMode() {
+  chartMode = chartMode === 'nav' ? 'return' : 'nav';
+  var btn = document.getElementById('chartToggle');
+  var title = document.querySelector('.section-title');
+  if (chartMode === 'return') {
+    btn.textContent = '切换净值';
+    if (title) title.childNodes[0].textContent = '收益率曲线 ';
+  } else {
+    btn.textContent = '切换收益率';
+    if (title) title.childNodes[0].textContent = '净值曲线 ';
+  }
+  filterAndRender(activeDateRange);
+}
+
+function renderAll(data) {
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('mainContent').style.display = 'block';
+  // Animate stat values
+  var statVals = document.querySelectorAll('.stat-value');
+  statVals.forEach(function(el) {
+    var txt = el.textContent;
+    var num = parseFloat(txt);
+    if (!isNaN(num)) {
+      var orig = el.textContent;
+      animateValue(el, 0, num, 600, function(v) { return orig.replace(/[\d.-]+/, v.toFixed(orig.indexOf('%') >= 0 ? 1 : 2)); });
+    }
+  });
+  fullNavData = data.nav || [];
+  fullRotData = data.rotation_log || [];
+  currentHolding = data.current_holding || null;
+  benchNavData = data.benchmark || null;
+  benchSym = data.benchmark_sym || '';
+  buildDateBar(fullNavData);
+  filterAndRender(activeDateRange);
+  renderBenchDisplay();
+  document.getElementById('updateTime').textContent = '更新: ' + (data.last_update || '--');
+}
+
+function renderBenchDisplay() {
+  var el = document.getElementById('benchReturnDisplay');
+  if (!el) return;
+  if (!benchNavData || benchNavData.length === 0) {
+    el.textContent = '';
+    return;
+  }
+  // Use the same date range as the chart
+  var nav = fullNavData;
+  if (activeDateRange !== 'all') {
+    nav = nav.filter(function(p) { return p.date >= activeDateRange; });
+  }
+  if (!nav || nav.length === 0) {
+    el.textContent = '';
+    return;
+  }
+  var rangeStart = nav[0].date;
+  var benchFiltered = benchNavData.filter(function(p) { return p.date >= rangeStart; });
+  if (benchFiltered.length < 2) {
+    el.textContent = '';
+    return;
+  }
+  var bFirst = benchFiltered[0].value;
+  var bLast = benchFiltered[benchFiltered.length - 1].value;
+  var bRet = (bLast / bFirst - 1) * 100;
+  var cls = bRet >= 0 ? 'up' : 'down';
+  el.innerHTML = '<span class="' + cls + '" style="font-weight:600">' + fmtPct(bRet) + '</span>';
+}
+
+function renderRotationHistory() {
+  var rot = filteredRot.length || activeDateRange !== 'all' ? filteredRot : fullRotData;
+  // 迭代从新到旧，每次处理一对（买→卖），配对成一轮
+  var cards = [];
+  var i = rot.length - 1;
+  while (i >= Math.max(0, rot.length - 60)) {
+    var sell = rot[i];
+    // 跳过同一天先卖后买的买入行（不显示）
+    if (i > 0 && rot[i-1].date === sell.date && (rot[i-1].signal === '买入' || rot[i-1].signal === '调仓')) {
+      i--; // 这个sell实际不完整，跳过
+      continue;
+    }
+    if (sell.signal.indexOf('卖出') < 0) {
+      i--;
+      continue;
+    }
+    // 找对应的买入（向前找最近的一个买入/调仓，且日期 <= 卖出日期）
+    var buy = null;
+    for (var j = i - 1; j >= 0; j--) {
+      if (rot[j].signal === '买入' || rot[j].signal === '调仓') {
+        buy = rot[j];
+        break;
+      }
+    }
+    if (!buy) {
+      i--;
+      continue;
+    }
+    // 计算持有天数（买→卖）
+    var holdDays = 0;
+    if (buy.date && sell.date) {
+      var bd = new Date(buy.date);
+      var sd = new Date(sell.date);
+      holdDays = Math.round((sd - bd) / 86400000);
+    }
+    var pnl = sell.pnl_pct;
+    var pnlDisplay = pnl != null ? fmtPct(pnl) : '-';
+    var pnlClass = pnl != null ? (pnl >= 0 ? 'up' : 'down') : '';
+    // 日期显示：去掉年份，格式 05-07
+    var buyDateShort = buy.date ? buy.date.slice(5) : '-';
+    var sellDateShort = sell.date ? sell.date.slice(5) : '-';
+    var dateLabel = holdDays > 0 ? buyDateShort + ' → ' + sellDateShort + ' (' + holdDays + '天)' : buyDateShort + ' → ' + sellDateShort;
+    cards.push({
+      dateLabel: dateLabel,
+      heldName: buy.name || '-',     // 这轮持有的（买入的）
+      buyName: buy.name || '-',       // 买入时买的
+      sellName: sell.name || '-',     // 卖出时卖的
+      pnlDisplay: pnlDisplay,
+      pnlClass: pnlClass,
+      isSameDay: buy.date === sell.date,
+      holdDays: holdDays
+    });
+    i = j - 1; // 跳过已配对的买入，继续往前找
+  }
+
+  // 渲染：卡片只显示持仓，调仓动作插在卡片之间
+  var rotHtml = '';
+  for (var c = 0; c < cards.length; c++) {
+    var card = cards[c];
+    // 卡片：只显示持仓时间段 + 持有谁 + 收益
+    rotHtml += '<div class="rot-card ' + card.pnlClass + '">' +
+      '<div class="rot-card-date">' + card.dateLabel + '</div>' +
+      '<div class="rot-card-held">' + card.heldName + '</div>' +
+      '<div class="rot-card-pnl ' + card.pnlClass + '">' + card.pnlDisplay + '</div>' +
+    '</div>';
+    // 两卡之间：调仓动作（垂直方向，箭头上方标注卖出/买入）
+    if (c < cards.length - 1) {
+      var nextCard = cards[c + 1];
+      rotHtml += '<div class="rot-adj">' +
+        '<div class="rot-adj-label">' +
+          '<span class="rot-adj-sell">卖出 ' + card.sellName + '</span>' +
+          '&nbsp;→&nbsp;' +
+          '<span class="rot-adj-buy">买入 ' + nextCard.buyName + '</span>' +
+        '</div>' +
+        '<div class="rot-adj-arrow-wrap">' +
+          '<div class="rot-adj-arrow-line"></div>' +
+          '<div class="rot-adj-arrow-head"></div>' +
+        '</div>' +
+      '</div>';
+    }
+  }
+  if (!rotHtml) rotHtml = '<div class="empty-state">暂无轮动记录</div>';
+  document.getElementById('rotationArea').innerHTML = '<div class="rot-card-grid">' + rotHtml + '</div>';
+}
+
+// ── 定时刷新 ──
+var schedules = [];
+
+async function loadSchedules() {
+  var r = await fetch('/api/schedules');
+  var d = await r.json();
+  schedules = d.schedules || [];
+  renderSchedules();
+}
+
+function renderSchedules() {
+  var el = document.getElementById('schChips');
+  if (!el) return;
+  var html = '';
+  schedules.forEach(function(s) {
+    html += '<span class="sch-chip">' + escHtml(s.time) +
+      ' <button class="sch-chip-del" data-id="' + escHtml(s.id) + '" data-action="delSchedule">✕</button></span>';
+  });
+  el.innerHTML = html;
+}
+
+async function addSchedule() {
+  var inp = document.getElementById('schTimeInput');
+  var t = inp.value.trim();
+  if (!t) return;
+  // 确认为 HH:MM 格式
+  if (!/^\d{2}:\d{2}$/.test(t)) { showMsg('时间格式应为 HH:MM'); return; }
+  var id = 'sch_' + t.replace(':', '') + '_' + Date.now();
+  var updated = schedules.concat([{id: id, time: t, enabled: true}]);
+  var r = await fetch('/api/schedules', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({schedules: updated})
+  });
+  var d = await r.json();
+  if (d.ok) {
+    schedules = d.schedules;
+    renderSchedules();
+    inp.value = '';
+  } else {
+    showMsg(d.message || '添加失败');
+  }
+}
+
+async function delSchedule(id) {
+  var updated = schedules.filter(function(s) { return s.id !== id; });
+  var r = await fetch('/api/schedules', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({schedules: updated})
+  });
+  var d = await r.json();
+  if (d.ok) {
+    schedules = d.schedules;
+    renderSchedules();
+  }
+}
+
+async function runScheduleNow() {
+  var r = await fetch('/api/schedules/run-now', {method: 'POST'});
+  var d = await r.json();
+  if (d.ok) {
+    showMsg('刷新完成，新增 ' + d.new_count + ' 条数据');
+    loadSchedules();
+  } else {
+    showMsg('刷新失败: ' + d.message);
+  }
+}
+
+var schLogVisible = false;
+async function toggleSchLog() {
+  schLogVisible = !schLogVisible;
+  var area = document.getElementById('schLogArea');
+  if (!area) return;
+  if (schLogVisible) {
+    area.classList.add('show');
+    var r = await fetch('/api/update-log?limit=20');
+    var d = await r.json();
+    var logs = d.logs || [];
+    if (logs.length === 0) {
+      area.innerHTML = '<div style="color:var(--text-dim)">暂无更新记录</div>';
+    } else {
+      var html = '';
+      logs.forEach(function(l) {
+        var cls = l.ok ? 'log-ok' : 'log-fail';
+        var status = l.ok ? '✓' : '✗';
+        var err = l.error ? ' (' + l.error + ')' : '';
+        html += '<div class="log-item ' + cls + '">[' + l.time + '] ' + status + ' 新增' + l.new_count + '条' + err + '</div>';
+      });
+      area.innerHTML = html;
+    }
+  } else {
+    area.classList.remove('show');
+  }
+}
+
+// 启动
+loadSchedules();
+loadPortfolios();
+</script>
+</body>
+</html>
