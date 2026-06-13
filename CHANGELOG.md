@@ -1,3 +1,38 @@
+## 0.1.13 ⏳ (2026-06-13) — H1 待 deploy
+
+### 修复
+- **H1 JSON 写不原子**：`app/main.py` 三处写入路径（`_save_portfolios` / `_save_schedules` / `_append_log`）直接 `open('w')` 写 JSON，掉电/异常会导致文件半截损坏。改为先写 `path.tmp` 再 `os.replace(tmp, path)` 的原子写。
+- 顺手收窄 `_load_portfolios` / `_append_log` 读路径的 `except:` → `(json.JSONDecodeError, OSError) as e`，错误不再静默（`_load_schedules` 的 `except:` 留给 H9 一并处理）
+- 测试：容器内 5 个用例通过（含真实 CONFIG_PATH 写入 + 读出比对 + 中文 UTF-8 + tmp cleanup）
+
+### 待办
+- `bash` H1 后 build + push + pull + deploy（0.1.13）
+
+## 0.1.12 ✅ (2026-06-12) — btrfs ugacl 修复收尾
+
+### 修复
+- **2b93f21**：0.1.11 的启动 data dir 可写检查顺序 bug — 启动 check 移到 `DB_PATH` 定义之后
+
+## 0.1.11 ✅ (2026-06-12) — btrfs ugacl 修复
+
+### 修复
+- **5ef74b0**：三件事一起发版
+  1. 宿主机 `chown -R 1000:1000 /volume1/docker/trendrod/data`（btrfs ugacl 阻挡容器内 uid=1000 → sqlite `cannot open database file`）
+  2. `app/main.py` 启动时检查 data dir 可写性，失败打印修复命令（不要静默）
+  3. `_db()` 包 try/except OperationalError 返回 None + 记录错误（不再静默 500）
+
+## 0.1.10 ✅ (2026-06-12) — Docker 加固
+
+### 修复
+- **3049d2f** Docker 容器加固（H13/H14/M36/M37/H40-H42）
+  - USER trendrod（uid 1000）— 不再 root
+  - no-new-privileges / cap_drop ALL / read_only tmpfs /usr/tmp /tmp
+  - HEALTHCHECK curl localhost:8000
+  - mem_limit / cpus / pids_limit
+  - apt-get --no-install-recommends
+  - ARG HTTP_PROXY build-arg（替代 Dockerfile 硬编码 203.0.113.10:7890）
+  - compose 安全选项全套
+
 ## 0.1.7 ✅ (2026-05-24) — 生产可用
 
 ### 修复

@@ -1,8 +1,14 @@
 #!/bin/bash
 # 6.13 早上跑的研究命令
 # 用法: bash .review/run-ux-research.sh
-set -e
+set -eo pipefail
 cd /volume1/docker/trendrod
+
+# Hermes background=true 启动的 subshell 可能 env 被裁剪（CLAUDE_CODE_SUBPROCESS_ENV_SCRUB 类似机制），
+# 导致 cc 找不到 ~/.claude/ OAuth token，报 "Not logged in"。显式 export 兜底。
+export HOME="${HOME:-/volume1/docker/hermes/data/home}"
+export USER="${USER:-Bin}"
+export PATH="$PATH:/home/Bin/.npm-global/bin"
 
 PROMPT=$(cat <<'EOF'
 阅读 .review/UX-RESEARCH-2026-06-12.md（这是研究任务规格），
@@ -20,4 +26,7 @@ PROMPT=$(cat <<'EOF'
 EOF
 )
 
-claude -p "$PROMPT" --permission-mode bypassPermissions
+/home/Bin/.npm-global/bin/claude -p "$PROMPT" \
+  --permission-mode bypassPermissions \
+  --max-turns 25 \
+  2>&1 | tee /tmp/ux-research.log

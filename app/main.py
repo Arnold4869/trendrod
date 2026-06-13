@@ -77,18 +77,26 @@ def db_load(symbols):
     return df
 
 # ─── 组合持久化 ──────────────────────────────────────
+def _atomic_write_json(path, obj):
+    """原子写 JSON：先写 path.tmp 再 os.replace，掉电/异常不会损坏原文件。
+    失败时记录错误但不删除 tmp（保留现场便于排查）。"""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(obj, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
 def _load_portfolios():
     if os.path.exists(CONFIG_PATH):
         try:
             with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
                 return json.load(f)
-        except: pass
+        except (json.JSONDecodeError, OSError) as e:
+            logger.error(f"加载 portfolios 失败: {e}")
     return _default_portfolios()
 
 def _save_portfolios(pfs):
-    os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
-    with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
-        json.dump(pfs, f, ensure_ascii=False, indent=2)
+    _atomic_write_json(CONFIG_PATH, pfs)
 
 def _default_portfolios():
     return [{"id":"default","name":"默认组合","window":22,"ma_period":60,"min_hold_days":5,"stop_loss":0,"mom_weights":[0.25,0.5,0.25],"indices":[
@@ -577,9 +585,7 @@ def _load_schedules():
         _schedules = []
 
 def _save_schedules():
-    os.makedirs(os.path.dirname(SCHEDULES_PATH), exist_ok=True)
-    with open(SCHEDULES_PATH, 'w', encoding='utf-8') as f:
-        json.dump(_schedules, f, ensure_ascii=False, indent=2)
+    _atomic_write_json(SCHEDULES_PATH, _schedules)
 
 def _sync_scheduler():
     """对比当前内存中的 _schedules 与 scheduler 内部任务，增量更新"""
@@ -665,13 +671,12 @@ def _append_log(entry):
         try:
             with open(UPDATE_LOG_PATH, 'r', encoding='utf-8') as f:
                 logs = json.load(f)
-        except:
+        except (json.JSONDecodeError, OSError) as e:
+            logger.error(f"读取 update-log 失败: {e}")
             logs = []
     logs.insert(0, entry)
     logs = logs[:500]  # 最多保留 500 条
-    os.makedirs(os.path.dirname(UPDATE_LOG_PATH), exist_ok=True)
-    with open(UPDATE_LOG_PATH, 'w', encoding='utf-8') as f:
-        json.dump(logs, f, ensure_ascii=False, indent=2)
+    _atomic_write_json(UPDATE_LOG_PATH, logs)
 
 # ─── FastAPI ──────────────────────────────────────────
 app = FastAPI(title="TrendRod V2")
