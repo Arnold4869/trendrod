@@ -1,12 +1,19 @@
-## 0.1.13 ⏳ (2026-06-13) — H1 待 deploy
+## 0.1.13 ✅ (2026-06-13) — H1 已 deploy
 
 ### 修复
 - **H1 JSON 写不原子**：`app/main.py` 三处写入路径（`_save_portfolios` / `_save_schedules` / `_append_log`）直接 `open('w')` 写 JSON，掉电/异常会导致文件半截损坏。改为先写 `path.tmp` 再 `os.replace(tmp, path)` 的原子写。
 - 顺手收窄 `_load_portfolios` / `_append_log` 读路径的 `except:` → `(json.JSONDecodeError, OSError) as e`，错误不再静默（`_load_schedules` 的 `except:` 留给 H9 一并处理）
 - 测试：容器内 5 个用例通过（含真实 CONFIG_PATH 写入 + 读出比对 + 中文 UTF-8 + tmp cleanup）
+- 端到端验证：POST /api/schedules 后 `trendrod_schedules.json` 写入正确 + `/data/` 无 .tmp 残留
 
-### 待办
-- `bash` H1 后 build + push + pull + deploy（0.1.13）
+### 部署
+- 镜像：`registry.cn-hangzhou.aliyuncs.com/docker-pusher/trendrod:0.1.13` + `latest`
+- commit：551d3f0（fix H1）+ cd2d2ea（UX 提案文档，独立 commit）
+- md5 一致性：本地 ↔ 容器 `212062e802c444043c8009b31f37ddf1`
+
+### 待办（0.1.14+）
+- UX 方案已出 (`.review/TRENDROD-UX-PROPOSAL-2026-06-13.md`)，等用户拍板 8 个开放问题 → 决定 Phase 1 范围
+- 阻塞项（C5 全量审计、C6 drag 5 个、M27、H2）
 
 ## 0.1.12 ✅ (2026-06-12) — btrfs ugacl 修复收尾
 
