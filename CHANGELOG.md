@@ -1,3 +1,43 @@
+## 0.1.14 ✅ (2026-06-13) — UX P1 (轻量): 视觉/数据 bug 全修
+
+### CSS Token 重构（L8 真修 — 双层语义）
+- **新 token**：`--up`/`--up-dim`（红涨，中国惯例）、`--down`/`--down-dim`（绿跌）、`--accent`/`--accent-dim`（品牌强调，主题独立）、`--dd-zone`（回撤区底色）
+- **旧 `--green`/`--red` 全替换**：58 处 CSS + JS 引用按"金融涨跌语义 vs 品牌强调"分类：
+  - 金融 up/down 位置（`.stat-value.up` / `.holding-tag.up|down` / `.rot-pnl.up|down` / `.yearly-*` / `.rot-card.*` / `.rot-adj-buy|sell` / `.log-ok|fail` / 最大回撤等）→ `var(--up)` / `var(--down)`
+  - 品牌强调位置（spinner / focus / active tab / 主题按钮 / pf-card / schedule / 主按钮 / 等）→ `var(--accent)`
+- **空仓色修正**：`.holding-tag.empty` 从 `--up-dim` 改 `--orange`（真正语义化，不再和 up 撞色）
+- **结果**：4 主题下金融涨跌永远红/绿（不被主题覆盖）；light-blue 主题的 down 不再显示蓝；focus/active 仍是品牌色
+
+### 数据/逻辑 bug
+- **M21/L4 `pctClass(0)` 当 up** → `v >= 0` 改 `v > 0`，0% 显示 down（持平不是涨）
+- **M20 `toISOString()` UTC 偏移** → 新 `dateStr(d)` helper（用本地时间），buildDateBar / filterAndRender 两处替换
+- **H2 `filterAndRender` 空 nav 早 return** → 清空 chart + statsGrid + holdingArea + rotationArea + 显示空态文案
+- **H21 `renderBenchDisplay` shortcut 不解析** → 新 `resolveCutoff(range, nav)` helper，filterAndRender + renderBenchDisplay 都复用（避免 ASCII 比较 `'2024-04-01' >= '#1m'` 错误）
+- **H20 续 `drawdownZones` hardcoded 红色** → 改读 CSS var `--dd-zone`，4 主题各自定义（不再被主题覆盖）
+
+### A11y（M23/M28）
+- 5 个 `aria-label` 给关键按钮（refresh / 4 个主题切换 / 管理组合）
+- `msgBar` 加 `role="status"` + `aria-live="polite"` + `aria-atomic="true"`
+
+### 排版（M22）
+- 4 类数字位置加 `font-variant-numeric: tabular-nums` + `letter-spacing: -0.02em`（金融数字等宽对齐不抖）
+
+### 验证
+- JS 语法：2 个 script block parse OK
+- 本地 ↔ 容器 md5 一致：`f8d0b4f4726edde0f29e4a4744c1f55d`
+- 容器 healthy / API 200 / 数据完整（nav 5690 / rot 481 / holding 有）
+- var(--green) / var(--red) 残留 0
+- deploy：hotfix（`docker cp + restart`，5 秒上线）
+
+### P1 范围说明
+按 UX 方案 `.review/TRENDROD-UX-PROPOSAL-2026-06-13.md` 的轻量化执行：纯前端 CSS/JS bug 修复，**不动架构、不引入新组件、不拆分视图、不引入构建工具**。完整 P1 包含 11 项，本版先做 9 项最高性价比的 1 天工作量，剩 2 项（M30 全局 reset / M24 alert 替换）风险大于收益，留 P2 单独评估。
+
+### 待办（0.1.15+）
+- P2：M24 Toast/Dialog 替换 alert/confirm（独立 commit，需要先实现 Toast 组件）
+- P2：M29 搜索 AbortController
+- P3：3 视图 + hash router（如果用户组合数增长）
+- 阻塞项：C5 XSS 全量审计 / C6 drag 5 个 handler / M27 window.onerror
+
 ## 0.1.13 ✅ (2026-06-13) — H1 已 deploy
 
 ### 修复
