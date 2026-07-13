@@ -1,19 +1,39 @@
 """
 TrendRod V2 — 指数动量轮动系统 (多组合版)
 """
-import json, logging, traceback, os
+import json, logging, traceback, os, threading, re
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List, Dict, Any
 import numpy as np, pandas as pd
 import akshare as ak
-from fastapi import FastAPI, Query, Body
+from fastapi import FastAPI, Query, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.security import APIKeyHeader
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from concurrent.futures import ThreadPoolExecutor
 import pytz
 
-logging.basicConfig(level=logging.INFO)
+# M35: 结构化日志 — LOG_FORMAT=json 时输出 JSON（便于 ELK/Loki 采集），否则纯文本
+class _JsonFormatter(logging.Formatter):
+    def format(self, record):
+        log = {
+            "ts": datetime.utcnow().isoformat() + "Z",
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": record.getMessage(),
+        }
+        if record.exc_info:
+            log["exc"] = self.formatException(record.exc_info)
+        return json.dumps(log, ensure_ascii=False)
+
+_handler = logging.StreamHandler()
+if os.getenv("LOG_FORMAT", "").lower() == "json":
+    _handler.setFormatter(_JsonFormatter())
+else:
+    _handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s"))
+logging.basicConfig(level=logging.INFO, handlers=[_handler])
 logger = logging.getLogger("trendrod")
 
 INIT_CASH, COST_RATE = 1.0, 0.0003
@@ -21,6 +41,15 @@ DB_PATH = os.getenv("DATABASE_PATH", "/data/trendrod.db")
 CONFIG_PATH = os.getenv("CONFIG_PATH", "/data/trendrod_portfolios.json")
 SCHEDULES_PATH = "/data/trendrod_schedules.json"
 UPDATE_LOG_PATH = "/data/trendrod_update_log.json"
+
+# C1: API token 鉴权（环境变量未配置时关闭，便于 LAN 部署）
+API_TOKEN = os.getenv("API_TOKEN", "").strip()
+_api_key_header = APIKeyHeader(name="X-API-Token", auto_error=False)
+
+# C3: 全局状态锁 — 保护 _caches / PORTFOLIOS / _schedules 免受 scheduler 线程与 HTTP handler 并发撕裂
+_state_lock = threading.RLock()
+# M12: refresh 进程锁 — 防止 /api/refresh 与 /api/schedules/run-now 并发触发撕裂缓存
+_refresh_lock = threading.Lock()
 
 # 启动时检查 data 目录可写性（必须在 DB_PATH 定义之后）
 try:
@@ -39,12 +68,16 @@ _schedules = []  # [{id, time, enabled}]
 
 # ─── 数据库 ──────────────────────────────────────────
 import sqlite3
+from contextlib import contextmanager
 
 def _db():
+    """打开 SQLite 连接并确保表存在。优先使用 _db_conn() 上下文管理器。"""
     try:
         os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
         c = sqlite3.connect(DB_PATH, timeout=5)
         c.execute('CREATE TABLE IF NOT EXISTS idx(sym TEXT,dt TEXT,o REAL,c REAL,h REAL,l REAL,v REAL,PRIMARY KEY(sym,dt))')
+        # 历史轮动记录持久化（requirements.md #5）— 重启后仍可查询
+        c.execute('CREATE TABLE IF NOT EXISTS rotations(portfolio_id TEXT,date TEXT,signal TEXT,symbol TEXT,name TEXT,pnl_pct REAL,net_value REAL,PRIMARY KEY(portfolio_id,date,symbol,signal))')
         c.commit()
         return c
     except sqlite3.OperationalError as e:
@@ -54,27 +87,80 @@ def _db():
         logger.error(f'_db unexpected: {e}')
         return None
 
+@contextmanager
+def _db_conn():
+    """M6: SQLite 连接上下文管理器，保证 commit/rollback/close。
+    失败时抛 RuntimeError，调用方应处理。"""
+    c = _db()
+    if c is None:
+        raise RuntimeError(f'无法打开数据库: {DB_PATH}')
+    try:
+        yield c
+        c.commit()
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+
 def db_latest(sym):
-    r = _db().execute("SELECT max(dt) FROM idx WHERE sym=?",(sym,)).fetchone()
-    return r[0] if r and r[0] else None
+    try:
+        with _db_conn() as c:
+            r = c.execute("SELECT max(dt) FROM idx WHERE sym=?", (sym,)).fetchone()
+        return r[0] if r and r[0] else None
+    except Exception as e:
+        logger.error(f'db_latest({sym}): {e}')
+        return None
 
 def db_save(records):
-    c = _db()
-    c.executemany("INSERT OR IGNORE INTO idx VALUES(?,?,?,?,?,?,?)", records)
-    c.commit(); c.close()
+    # M2: INSERT OR REPLACE — 数据源修订历史 bar 时覆盖旧值（UPSERT 语义）
+    try:
+        with _db_conn() as c:
+            c.executemany("INSERT OR REPLACE INTO idx VALUES(?,?,?,?,?,?,?)", records)
+    except Exception as e:
+        logger.error(f'db_save: {e}')
 
 def db_load(symbols):
     dfs = []
     for sym in symbols:
-        rows = _db().execute("SELECT dt,o,c FROM idx WHERE sym=? ORDER BY dt",(sym,)).fetchall()
+        try:
+            with _db_conn() as c:
+                rows = c.execute("SELECT dt,o,c FROM idx WHERE sym=? ORDER BY dt", (sym,)).fetchall()
+        except Exception as e:
+            logger.error(f'db_load({sym}): {e}')
+            continue
         if not rows: continue
-        df = pd.DataFrame(rows, columns=["date",f"open_{sym}",f"close_{sym}"])
+        df = pd.DataFrame(rows, columns=["date", f"open_{sym}", f"close_{sym}"])
         df["date"] = pd.to_datetime(df["date"]); df.set_index("date", inplace=True)
         dfs.append(df)
     if not dfs: return pd.DataFrame()
     df = pd.concat(dfs, axis=1)    # 保留所有日期，由策略层按标的处理缺失
     logger.info(f"加载: {len(df)}个交易日, {len(dfs)}个标的")
     return df
+
+def _save_rotations(pfid, rot):
+    """持久化轮动记录到 DB（覆盖该组合的全部记录）。"""
+    try:
+        with _db_conn() as c:
+            c.execute("DELETE FROM rotations WHERE portfolio_id=?", (pfid,))
+            c.executemany("INSERT OR REPLACE INTO rotations VALUES(?,?,?,?,?,?,?)",
+                          [(pfid, r.get("date", ""), r.get("signal", ""), r.get("symbol", ""),
+                            r.get("name", ""), r.get("pnl_pct"), r.get("net_value")) for r in rot])
+    except Exception as e:
+        logger.error(f"_save_rotations({pfid}): {e}")
+
+def _load_rotations(pfid, limit=200):
+    """从 DB 读取轮动记录（按日期降序）。"""
+    try:
+        with _db_conn() as c:
+            rows = c.execute(
+                "SELECT date,signal,symbol,name,pnl_pct,net_value FROM rotations WHERE portfolio_id=? ORDER BY date DESC LIMIT ?",
+                (pfid, limit)).fetchall()
+        return [{"date": r[0], "signal": r[1], "symbol": r[2], "name": r[3],
+                 "pnl_pct": r[4], "net_value": r[5]} for r in rows]
+    except Exception as e:
+        logger.error(f"_load_rotations({pfid}): {e}")
+        return []
 
 # ─── 组合持久化 ──────────────────────────────────────
 def _atomic_write_json(path, obj):
@@ -114,18 +200,11 @@ def _get_pf(pfid):
 
 # ─── 数据获取 ──────────────────────────────────────────
 def fetch_new(symbols):
+    # M4: 并行抓取，最多 4 并发（akshare 主要是网络 IO，并行显著加速）
     total = 0
-    for sym in symbols:
-        latest = db_latest(sym)
-        try:
-            df = ak.stock_zh_index_daily(symbol=sym)
-            if df is None or df.empty: continue
-            if latest: df = df[pd.to_datetime(df["date"]) > pd.to_datetime(latest)]
-            if df.empty: continue
-            records = [(sym,r["date"],float(r["open"]),float(r["close"]),
-                        float(r["high"]),float(r["low"]),float(r["volume"])) for _,r in df.iterrows()]
-            db_save(records); total += len(records)
-        except Exception as e: logger.error(f"{sym}: {e}")
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        for cnt in ex.map(fetch_one, symbols):
+            total += cnt or 0
     return total
 
 def fetch_one(sym):
@@ -157,7 +236,8 @@ def _load_search_cache():
                 _SEARCH_CACHE = [{"sym": s, "name": n} for s, n in json.load(f)]
                 logger.info(f"本地指数缓存: {len(_SEARCH_CACHE)} 条")
                 return
-        except: pass
+        except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
+            logger.warning(f"本地指数缓存加载失败: {e}")
     # 2. 尝试 AKShare
     try:
         df = ak.stock_zh_index_spot_em()
@@ -182,6 +262,42 @@ def _search_indices(q: str):
 # ─── 策略 + 回测 ───────────────────────────────────────
 MOM_PERIODS = [5, 22, 60]       # 固定3个动量窗口（5天/22天/60天）# 双引擎对齐: 与 backtest_bt.py 同步使用 [0.25, 0.5, 0.25]
 
+def _compute_momentum(df, syms, mom_weights, ma_period):
+    """H6: 多周期动量合成分 + 均线过滤。原地修改 df（调用方应传入 copy）。
+    抽出为独立函数便于单测。"""
+    if not mom_weights or len(mom_weights) != 3:
+        mom_weights = [0.25, 0.5, 0.25]
+    wgt_sum = sum(mom_weights)
+    if wgt_sum > 0:
+        mom_weights = [w / wgt_sum for w in mom_weights]
+    for sym in syms:
+        c = f"close_{sym}"
+        if c in df.columns:
+            parts = []
+            for per, w in zip(MOM_PERIODS, mom_weights):
+                if w > 0:
+                    parts.append(df[c].pct_change(per) * w)
+            df[f"mom_{sym}"] = sum(parts) if parts else 0.0
+    if ma_period > 0:
+        for sym in syms:
+            c = f"close_{sym}"
+            if c in df.columns:
+                df[f"ma_{sym}"] = df[c].rolling(ma_period).mean()
+
+def _compute_stats(nv, rot, df):
+    """H6: 计算回测统计指标。nv: 净值 Series, rot: 轮动记录 list, df: 原始 DataFrame。
+    返回 dict，所有值已做 isfinite 兜底。抽出为独立函数便于单测。"""
+    tr = nv.iloc[-1] / INIT_CASH - 1
+    yrs = (nv.index[-1] - nv.index[0]).days / 365.25
+    ar = (1 + tr) ** (1 / yrs) - 1 if yrs > 0 else 0
+    ret = nv.pct_change().dropna()
+    mdd = float((nv / nv.cummax() - 1).min())
+    shrp = float((ret.mean() / ret.std()) * np.sqrt(252)) if ret.std() != 0 else 0
+    stats = {"total_return": round(tr * 100, 1), "ann_return": round(ar * 100, 1),
+             "max_drawdown": round(mdd * 100, 1), "sharpe": round(shrp, 2),
+             "trading_days": len(df), "switches": len(rot)}
+    return {k: (v if np.isfinite(v) else 0) for k, v in stats.items()}
+
 def compute(df, indices, window, ma_period=60, min_hold_days=5, stop_loss=0,
                  mom_weights=None, top_n=1, weight_ratios=None):
     """indices = [{"sym":"sh000016","name":"上证50"}, ...]
@@ -194,12 +310,8 @@ def compute(df, indices, window, ma_period=60, min_hold_days=5, stop_loss=0,
     if not syms or df.empty:
         return [],[],[],[],None
 
-    # 权重
-    if not mom_weights or len(mom_weights) != 3:
-        mom_weights = [0.25, 0.5, 0.25]
-    wgt_sum = sum(mom_weights)
-    if wgt_sum > 0:
-        mom_weights = [w/wgt_sum for w in mom_weights]
+    # M7: 防止污染调用方的 DataFrame（compute 会新增 mom_/ma_/top_n_syms 等列）
+    df = df.copy()
 
     # top_n & weight_ratios
     top_n = max(1, int(top_n if top_n else 1))
@@ -215,22 +327,8 @@ def compute(df, indices, window, ma_period=60, min_hold_days=5, stop_loss=0,
     while len(weight_ratios) < top_n:
         weight_ratios.append(0.0)
 
-    # ── 1. 多周期动量合成 ──
-    for sym in syms:
-        c = f"close_{sym}"
-        if c in df.columns:
-            parts = []
-            for per, w in zip(MOM_PERIODS, mom_weights):
-                if w > 0:
-                    parts.append(df[c].pct_change(per) * w)
-            df[f"mom_{sym}"] = sum(parts) if parts else 0.0
-
-    # ── 2. 均线过滤 ──
-    if ma_period > 0:
-        for sym in syms:
-            c = f"close_{sym}"
-            if c in df.columns:
-                df[f"ma_{sym}"] = df[c].rolling(ma_period).mean()
+    # ── 1+2. 多周期动量合成 + 均线过滤（H6: 抽出为 _compute_momentum 便于单测）──
+    _compute_momentum(df, syms, mom_weights, ma_period)
 
     # ── 3. 每日动量排名（向量化） ──
     mom_cols = [f"mom_{sym}" for sym in syms]
@@ -299,7 +397,7 @@ def compute(df, indices, window, ma_period=60, min_hold_days=5, stop_loss=0,
             if sig is not None and hasattr(sig, '__iter__') and not isinstance(sig, str):
                 try:
                     sig_key = tuple(float(x) for x in sig if not (isinstance(x, float) and np.isnan(x)))
-                except:
+                except (TypeError, ValueError):
                     sig_key = None
             if sig_key is not None:
                 if last_sig_key == sig_key:
@@ -479,16 +577,8 @@ def compute(df, indices, window, ma_period=60, min_hold_days=5, stop_loss=0,
     bench = sum(df[f"close_{s}"] / v for s, v in fcs.items()) / len(fcs) if fcs else pd.Series(1.0, index=df.index)
     bench_nav = [{"date": d.strftime("%Y-%m-%d"), "value": round(float(v), 4)} for d, v in bench.items()]
 
-    # 统计
-    tr = nv.iloc[-1] / INIT_CASH - 1
-    yrs = (nv.index[-1] - nv.index[0]).days / 365.25
-    ar = (1 + tr) ** (1 / yrs) - 1 if yrs > 0 else 0
-    ret = nv.pct_change().dropna()
-    mdd = float((nv / nv.cummax() - 1).min())
-    shrp = float((ret.mean() / ret.std()) * np.sqrt(252)) if ret.std() != 0 else 0
-    stats = {"total_return": round(tr * 100, 1), "ann_return": round(ar * 100, 1),
-             "max_drawdown": round(mdd * 100, 1), "sharpe": round(shrp, 2),
-             "trading_days": len(df), "switches": len(rot)}
+    # 统计（H6: 抽出为 _compute_stats 便于单测）
+    stats = _compute_stats(nv, rot, df)
 
     # 当前持仓（多头中按 entry_price 排序的所有标的）
     h = []
@@ -510,7 +600,6 @@ def compute(df, indices, window, ma_period=60, min_hold_days=5, stop_loss=0,
                     "momentum_latest": round(float(mom_latest * 100), 1) if not np.isnan(mom_latest) and np.isfinite(mom_latest) else 0
                 })
 
-    stats = {k: (v if np.isfinite(v) else 0) for k, v in stats.items()}
     return nav, stats, rot, h, bench_nav
 
 def _benchmark_nav(bench_sym):
@@ -552,7 +641,7 @@ def _recompute_cache(pfid, bench_sym=None):
             def _ok(v):
                 if isinstance(v, str) or v is None: return True
                 try: return bool(np.isfinite(float(v)))
-                except: return False
+                except (TypeError, ValueError): return False
             nav = [{k: (v if _ok(v) else 0) for k, v in x.items()} for x in nav]
             rot = [{k: (v if _ok(v) else 0) for k, v in x.items()} for x in rot]
             # 基准数据
@@ -560,12 +649,16 @@ def _recompute_cache(pfid, bench_sym=None):
             if bench_sym:
                 bench_nav_data = _benchmark_nav(bench_sym)
                 logger.info(f"[api_status] 基准数据 bench_sym={bench_sym}, 条数={len(bench_nav_data) if bench_nav_data else 0}")
-            _caches[pfid] = {
-                "nav": nav, "stats": stats,
-                "rotation_log": rot, "current_holding": h,
-                "last_update": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "benchmark": bench_nav_data if bench_nav_data else None
-            }
+            # C3: 写缓存加 _state_lock，防止与 HTTP handler / scheduler 并发撕裂
+            with _state_lock:
+                _caches[pfid] = {
+                    "nav": nav, "stats": stats,
+                    "rotation_log": rot, "current_holding": h,
+                    "last_update": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "benchmark": bench_nav_data if bench_nav_data else None
+                }
+            # 历史轮动记录持久化（requirements.md #5）— 重启后仍可查询
+            _save_rotations(pfid, rot)
             logger.info(f"缓存重算 [{pfid}]: nav={len(nav)}点, rot={len(rot)}条")
         else:
             logger.warning(f"缓存重算 [{pfid}]: compute 返回空 nav")
@@ -579,7 +672,8 @@ def _load_schedules():
         try:
             with open(SCHEDULES_PATH, 'r', encoding='utf-8') as f:
                 _schedules = json.load(f)
-        except:
+        except (json.JSONDecodeError, OSError) as e:
+            logger.error(f"加载 schedules 失败: {e}")
             _schedules = []
     else:
         _schedules = []
@@ -587,18 +681,50 @@ def _load_schedules():
 def _save_schedules():
     _atomic_write_json(SCHEDULES_PATH, _schedules)
 
+def _do_refresh():
+    """C4: 提到模块级（原为 _init_scheduler 闭包，导致模块级 _sync_scheduler 引用 NameError）。
+    执行一次完整刷新（拉数据+重算所有组合缓存）并记录结果。
+    M12: 用 _refresh_lock 防止与 /api/refresh 并发触发撕裂缓存。"""
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    acquired = _refresh_lock.acquire(blocking=False)
+    if not acquired:
+        logger.warning("[定时刷新] 已有刷新在进行，跳过本次")
+        _append_log({"time": ts, "ok": False, "new_count": 0, "error": "已有刷新在进行"})
+        return
+    try:
+        all_new = 0
+        with _state_lock:
+            pfs_snapshot = list(PORTFOLIOS)
+        for pf in pfs_snapshot:
+            syms = [i["sym"] for i in pf["indices"]]
+            nc = fetch_new(syms)
+            all_new += nc
+            _recompute_cache(pf["id"])
+        _append_log({"time": ts, "ok": True, "new_count": all_new, "error": ""})
+        logger.info(f"[定时刷新] 成功，新增 {all_new} 条数据")
+        _notify("TrendRod 定时刷新", f"结果: 成功\n新增数据: {all_new} 条\n时间: {ts}")
+    except Exception as e:
+        _append_log({"time": ts, "ok": False, "new_count": 0, "error": str(e)})
+        logger.error(f"[定时刷新] 失败: {e}")
+        _notify("TrendRod 定时刷新", f"结果: 失败\n错误: {e}\n时间: {ts}")
+    finally:
+        _refresh_lock.release()
+
 def _sync_scheduler():
-    """对比当前内存中的 _schedules 与 scheduler 内部任务，增量更新"""
+    """C4: 模块级（原模块级版本引用未定义的 _do_refresh = 死代码；_init_scheduler 内又有一份重复 _sync）。
+    对比 _schedules 与 scheduler 内部任务，增量更新。"""
     if _scheduler is None: return
     existing_ids = {_j.id for _j in _scheduler.get_jobs()}
-    want_ids = {s["id"] for s in _schedules if s.get("enabled", True)}
+    with _state_lock:
+        want_ids = {s["id"] for s in _schedules if s.get("enabled", True)}
+        schedules_snapshot = list(_schedules)
 
     for _jid in existing_ids - want_ids:
         _scheduler.remove_job(_jid)
         logger.info(f"[调度] 移除任务 {_jid}")
 
     tz = pytz.timezone("Asia/Shanghai")
-    for s in _schedules:
+    for s in schedules_snapshot:
         if not s.get("enabled", True): continue
         job_id = s["id"]
         hh, mm = s["time"].split(":")
@@ -615,68 +741,51 @@ def _init_scheduler():
     global _scheduler
     tz = pytz.timezone("Asia/Shanghai")
     _scheduler = BackgroundScheduler(timezone=tz)
-
-    def _do_refresh():
-        """执行一次完整刷新（拉数据+重算所有组合缓存）并记录结果"""
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        try:
-            all_new = 0
-            for pf in PORTFOLIOS:
-                syms = [i["sym"] for i in pf["indices"]]
-                nc = fetch_new(syms)
-                all_new += nc
-                _recompute_cache(pf["id"])
-            _append_log({"time": ts, "ok": True, "new_count": all_new, "error": ""})
-            logger.info(f"[定时刷新] 成功，新增 {all_new} 条数据")
-        except Exception as e:
-            _append_log({"time": ts, "ok": False, "new_count": 0, "error": str(e)})
-            logger.error(f"[定时刷新] 失败: {e}")
-
-    def _sync():
-        """对比当前内存中的 _schedules 与 scheduler 内部任务，增量更新"""
-        if _scheduler is None: return
-        # 收集现有的 job_id 集合
-        existing_ids = {_j.id for _j in _scheduler.get_jobs()}
-        want_ids = {s["id"] for s in _schedules if s.get("enabled", True)}
-
-        # 删除不在 want_ids 中的任务
-        for _jid in existing_ids - want_ids:
-            _scheduler.remove_job(_jid)
-            logger.info(f"[调度] 移除任务 {_jid}")
-
-        # 添加/更新任务
-        tz = pytz.timezone("Asia/Shanghai")
-        for s in _schedules:
-            if not s.get("enabled", True): continue
-            job_id = s["id"]
-            hh, mm = s["time"].split(":")
-            # job_id 已经是完整 id，直接用 id 字段创建/更新
-            _scheduler.add_job(
-                _do_refresh,
-                trigger=CronTrigger(hour=int(hh), minute=int(mm), second=0, timezone=tz),
-                id=job_id,
-                replace_existing=True,
-                misfire_grace_time=300,
-            )
-            logger.info(f"[调度] 注册任务 {job_id} @ {s['time']}")
-
     _load_schedules()
-    _sync()
+    _sync_scheduler()
     _scheduler.start()
     logger.info("调度器启动完毕")
 
 def _append_log(entry):
-    logs = []
-    if os.path.exists(UPDATE_LOG_PATH):
+    # M9: append-only NDJSON — 不再每次重写整个 500 条 JSON 文件
+    try:
+        os.makedirs(os.path.dirname(UPDATE_LOG_PATH), exist_ok=True)
+        with open(UPDATE_LOG_PATH, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + '\n')
+        # 滚动裁剪：超过 1000 行时保留最后 500 行
         try:
             with open(UPDATE_LOG_PATH, 'r', encoding='utf-8') as f:
-                logs = json.load(f)
-        except (json.JSONDecodeError, OSError) as e:
-            logger.error(f"读取 update-log 失败: {e}")
-            logs = []
-    logs.insert(0, entry)
-    logs = logs[:500]  # 最多保留 500 条
-    _atomic_write_json(UPDATE_LOG_PATH, logs)
+                lines = f.readlines()
+            if len(lines) > 1000:
+                with open(UPDATE_LOG_PATH, 'w', encoding='utf-8') as f:
+                    f.writelines(lines[-500:])
+        except OSError as e:
+            logger.error(f"滚动 update-log 失败: {e}")
+    except OSError as e:
+        logger.error(f"写入 update-log 失败: {e}")
+
+def _notify(title, content):
+    """发送通知到飞书/Telegram（若配置了 webhook）。用 urllib 避免新增依赖。
+    环境变量：FEISHU_WEBHOOK / TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID。"""
+    import urllib.request
+    feishu = os.getenv("FEISHU_WEBHOOK", "").strip()
+    tg_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    tg_chat = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+    if not feishu and not (tg_token and tg_chat):
+        return  # 未配置任何渠道，静默跳过
+    try:
+        if feishu:
+            payload = json.dumps({"msg_type": "text", "content": {"text": f"{title}\n{content}"}}, ensure_ascii=False).encode()
+            req = urllib.request.Request(feishu, data=payload, headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=5)
+        if tg_token and tg_chat:
+            text = f"{title}\n{content}"
+            url = f"https://api.telegram.org/bot{tg_token}/sendMessage"
+            payload = json.dumps({"chat_id": tg_chat, "text": text}).encode()
+            req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=5)
+    except Exception as e:
+        logger.warning(f"通知发送失败: {e}")
 
 # ─── FastAPI ──────────────────────────────────────────
 app = FastAPI(title="TrendRod V2")
@@ -744,8 +853,9 @@ def api_list_portfolios():
     return {"portfolios": PORTFOLIOS}
 
 # ─── name 校验（C5: 防御 XSS） ────────────────────
-import re
 _NAME_RE = re.compile(r'^[一-龥一-鿿 a-zA-Z0-9_.\-()（）【】「」]{1,32}$')
+# H5/H15: portfolio id 字符集校验，防 id 注入 HTML 属性 / onclick 字符串
+_PFID_RE = re.compile(r'^[a-zA-Z0-9_-]{1,32}$')
 
 def _validate_name(name):
     """校验组合 name：1-32 字符；允许 CJK、拉丁字母数字、空格、
@@ -760,86 +870,123 @@ def _validate_name(name):
         return "name 长度须为 1-32 字符，仅允许中英文/数字与 - _ . ()（）【】「」"
     return None
 
+def _validate_pfid(pfid):
+    """H5/H15: 校验 portfolio id 字符集。返回 None 通过，否则错误信息。"""
+    if not isinstance(pfid, str) or not _PFID_RE.match(pfid):
+        return "id 仅允许 1-32 位字母数字与 - _"
+    return None
+
+# C1: API token 鉴权 — 未配置 API_TOKEN 时放行（LAN 部署友好）
+def _verify_token(token: str = Depends(_api_key_header)):
+    if not API_TOKEN:
+        return  # 未配置 token = 不启用鉴权
+    if token != API_TOKEN:
+        raise HTTPException(status_code=401, detail="无效或缺失的 X-API-Token")
+
 @app.post("/api/portfolios")
-def api_create_portfolio(data: dict = Body(...)):
+def api_create_portfolio(data: dict = Body(...), _: None = Depends(_verify_token)):
     global PORTFOLIOS
-    pfid = data.get("id", "").strip()
-    if not pfid:
-        return JSONResponse({"ok": False, "message": "id 不能为空"}, 400)
-    if _get_pf(pfid):
-        return JSONResponse({"ok": False, "message": "组合已存在"}, 400)
-    name = data.get("name", pfid)
-    err = _validate_name(name)
+    pfid = str(data.get("id", "")).strip()
+    err = _validate_pfid(pfid)
     if err:
-        return JSONResponse({"ok": False, "message": err}, 422)
-    pf = {
-        "id": pfid,
-        "name": name,
-        "window": data.get("window", 22),
-        "ma_period": data.get("ma_period", 60),
-        "min_hold_days": data.get("min_hold_days", 5),
-        "stop_loss": data.get("stop_loss", 0),
-        "mom_weights": data.get("mom_weights", [0.25, 0.5, 0.25]),
-        "top_n": data.get("top_n", 1),
-        "weight_ratios": data.get("weight_ratios", None),
-        "indices": data.get("indices", [])
-    }
-    PORTFOLIOS.append(pf)
-    _save_portfolios(PORTFOLIOS)
+        return JSONResponse({"ok": False, "message": err}, 400)
+    with _state_lock:
+        if _get_pf(pfid):
+            return JSONResponse({"ok": False, "message": "组合已存在"}, 400)
+        name = data.get("name", pfid)
+        err = _validate_name(name)
+        if err:
+            return JSONResponse({"ok": False, "message": err}, 422)
+        # H4: 类型校验 + 范围裁剪
+        try:
+            window = int(data.get("window", 22))
+            ma_period = int(data.get("ma_period", 60))
+            min_hold_days = int(data.get("min_hold_days", 5))
+            stop_loss = int(data.get("stop_loss", 0))
+            top_n = int(data.get("top_n", 1))
+        except (TypeError, ValueError):
+            return JSONResponse({"ok": False, "message": "数值参数必须为整数"}, 422)
+        if not (1 <= top_n <= 5):
+            return JSONResponse({"ok": False, "message": "top_n 须在 1-5"}, 422)
+        pf = {
+            "id": pfid,
+            "name": name,
+            "window": window,
+            "ma_period": max(0, min(ma_period, 250)),
+            "min_hold_days": max(0, min(min_hold_days, 60)),
+            "stop_loss": max(0, min(stop_loss, 50)),
+            "mom_weights": data.get("mom_weights", [0.25, 0.5, 0.25]),
+            "top_n": top_n,
+            "weight_ratios": data.get("weight_ratios", None),
+            "indices": data.get("indices", [])
+        }
+        PORTFOLIOS.append(pf)
+        _save_portfolios(PORTFOLIOS)
     return {"ok": True, "portfolio": pf}
 
 @app.put("/api/portfolios/reorder")
-def api_reorder_portfolios(data: dict = Body(...)):
+def api_reorder_portfolios(data: dict = Body(...), _: None = Depends(_verify_token)):
     """接收 {order: [pfid1, pfid2, ...]} 按给定顺序设置 sort 字段"""
     global PORTFOLIOS
     order = data.get("order", [])
-    for i, pid in enumerate(order):
-        pf = _get_pf(pid)
-        if pf:
-            pf["sort"] = i
-    max_sort = len(PORTFOLIOS)
-    for pf in PORTFOLIOS:
-        if "sort" not in pf:
-            max_sort += 1
-            pf["sort"] = max_sort
-    PORTFOLIOS.sort(key=lambda p: p.get("sort", 999))
-    _save_portfolios(PORTFOLIOS)
+    with _state_lock:
+        for i, pid in enumerate(order):
+            pf = _get_pf(pid)
+            if pf:
+                pf["sort"] = i
+        max_sort = len(PORTFOLIOS)
+        for pf in PORTFOLIOS:
+            if "sort" not in pf:
+                max_sort += 1
+                pf["sort"] = max_sort
+        PORTFOLIOS.sort(key=lambda p: p.get("sort", 999))
+        _save_portfolios(PORTFOLIOS)
     return {"ok": True}
 
 @app.put("/api/portfolios/{pfid}")
-def api_update_portfolio(pfid: str, data: dict = Body(...)):
+def api_update_portfolio(pfid: str, data: dict = Body(...), _: None = Depends(_verify_token)):
     global PORTFOLIOS
-    pf = _get_pf(pfid)
-    if not pf:
-        return JSONResponse({"ok": False, "message": "组合不存在"}, 404)
-    if "name" in data:
-        err = _validate_name(data["name"])
-        if err:
-            return JSONResponse({"ok": False, "message": err}, 422)
-        pf["name"] = data["name"]
-    if "window" in data: pf["window"] = int(data["window"])
-    if "ma_period" in data: pf["ma_period"] = int(data["ma_period"])
-    if "min_hold_days" in data: pf["min_hold_days"] = int(data["min_hold_days"])
-    if "stop_loss" in data: pf["stop_loss"] = int(data["stop_loss"])
-    if "mom_weights" in data: pf["mom_weights"] = data["mom_weights"]
-    if "top_n" in data: pf["top_n"] = int(data["top_n"])
-    if "weight_ratios" in data: pf["weight_ratios"] = data["weight_ratios"]
-    if "indices" in data: pf["indices"] = data["indices"]
-    _save_portfolios(PORTFOLIOS)
+    with _state_lock:
+        pf = _get_pf(pfid)
+        if not pf:
+            return JSONResponse({"ok": False, "message": "组合不存在"}, 404)
+        if "name" in data:
+            err = _validate_name(data["name"])
+            if err:
+                return JSONResponse({"ok": False, "message": err}, 422)
+            pf["name"] = data["name"]
+        # H4: 类型校验 + 范围裁剪
+        try:
+            if "window" in data: pf["window"] = int(data["window"])
+            if "ma_period" in data: pf["ma_period"] = max(0, min(int(data["ma_period"]), 250))
+            if "min_hold_days" in data: pf["min_hold_days"] = max(0, min(int(data["min_hold_days"]), 60))
+            if "stop_loss" in data: pf["stop_loss"] = max(0, min(int(data["stop_loss"]), 50))
+            if "top_n" in data:
+                tn = int(data["top_n"])
+                if not (1 <= tn <= 5):
+                    return JSONResponse({"ok": False, "message": "top_n 须在 1-5"}, 422)
+                pf["top_n"] = tn
+        except (TypeError, ValueError):
+            return JSONResponse({"ok": False, "message": "数值参数必须为整数"}, 422)
+        if "mom_weights" in data: pf["mom_weights"] = data["mom_weights"]
+        if "weight_ratios" in data: pf["weight_ratios"] = data["weight_ratios"]
+        if "indices" in data: pf["indices"] = data["indices"]
+        _save_portfolios(PORTFOLIOS)
     _recompute_cache(pfid)
     return {"ok": True, "portfolio": pf}
 
 @app.delete("/api/portfolios/{pfid}")
-def api_delete_portfolio(pfid: str):
+def api_delete_portfolio(pfid: str, _: None = Depends(_verify_token)):
     global PORTFOLIOS
-    if len(PORTFOLIOS) <= 1:
-        return JSONResponse({"ok": False, "message": "至少保留一个组合"}, 400)
-    pf = _get_pf(pfid)
-    if not pf:
-        return JSONResponse({"ok": False, "message": "组合不存在"}, 404)
-    PORTFOLIOS = [p for p in PORTFOLIOS if p["id"] != pfid]
-    _save_portfolios(PORTFOLIOS)
-    _caches.pop(pfid, None)
+    with _state_lock:
+        if len(PORTFOLIOS) <= 1:
+            return JSONResponse({"ok": False, "message": "至少保留一个组合"}, 400)
+        pf = _get_pf(pfid)
+        if not pf:
+            return JSONResponse({"ok": False, "message": "组合不存在"}, 404)
+        PORTFOLIOS = [p for p in PORTFOLIOS if p["id"] != pfid]
+        _save_portfolios(PORTFOLIOS)
+        _caches.pop(pfid, None)
     return {"ok": True}
 
 # ─── 标的搜索 ──────────────────────────────────────
@@ -849,88 +996,111 @@ def api_search(q: str = Query("")):
 
 # ─── 标的管理（针对某组合） ────────────────────────
 @app.post("/api/portfolios/{pfid}/indices")
-def api_add_index(pfid: str, sym: str = Query(...), name: str = Query("")):
+def api_add_index(pfid: str, sym: str = Query(...), name: str = Query(""), _: None = Depends(_verify_token)):
     global PORTFOLIOS
-    pf = _get_pf(pfid)
-    if not pf:
-        return JSONResponse({"ok": False, "message": "组合不存在"}, 404)
-    # 如果没给 name，从搜索缓存中查找
-    if not name:
-        results = _search_indices(sym)
-        if results:
-            name = results[0]["name"]
-        else:
-            name = sym
-    for idx in pf["indices"]:
-        if idx["sym"] == sym:
-            return JSONResponse({"ok": False, "message": "该标的已存在"}, 400)
-    if len(pf["indices"]) >= 26:
-        return JSONResponse({"ok": False, "message": "最多 26 个标的"}, 400)
-    pf["indices"].append({"sym": sym, "name": name[:10]})
-    _save_portfolios(PORTFOLIOS)
-    # 尝试拉取数据
+    with _state_lock:
+        pf = _get_pf(pfid)
+        if not pf:
+            return JSONResponse({"ok": False, "message": "组合不存在"}, 404)
+        # 如果没给 name，从搜索缓存中查找
+        if not name:
+            results = _search_indices(sym)
+            if results:
+                name = results[0]["name"]
+            else:
+                name = sym
+        for idx in pf["indices"]:
+            if idx["sym"] == sym:
+                return JSONResponse({"ok": False, "message": "该标的已存在"}, 400)
+        if len(pf["indices"]) >= 26:
+            return JSONResponse({"ok": False, "message": "最多 26 个标的"}, 400)
+        pf["indices"].append({"sym": sym, "name": name[:10]})
+        _save_portfolios(PORTFOLIOS)
+    # 尝试拉取数据（锁外执行，避免长时间持锁）
     new_count = fetch_one(sym)
     _recompute_cache(pfid)
     return {"ok": True, "new_count": new_count}
 
 @app.delete("/api/portfolios/{pfid}/indices/{sym}")
-def api_remove_index(pfid: str, sym: str):
+def api_remove_index(pfid: str, sym: str, _: None = Depends(_verify_token)):
     global PORTFOLIOS
-    pf = _get_pf(pfid)
-    if not pf:
-        return JSONResponse({"ok": False, "message": "组合不存在"}, 404)
-    if len(pf["indices"]) <= 1:
-        return JSONResponse({"ok": False, "message": "至少保留一个标的"}, 400)
-    pf["indices"] = [idx for idx in pf["indices"] if idx["sym"] != sym]
-    _save_portfolios(PORTFOLIOS)
+    with _state_lock:
+        pf = _get_pf(pfid)
+        if not pf:
+            return JSONResponse({"ok": False, "message": "组合不存在"}, 404)
+        if len(pf["indices"]) <= 1:
+            return JSONResponse({"ok": False, "message": "至少保留一个标的"}, 400)
+        pf["indices"] = [idx for idx in pf["indices"] if idx["sym"] != sym]
+        _save_portfolios(PORTFOLIOS)
     _recompute_cache(pfid)
     return {"ok": True}
 
 # ─── 数据刷新（针对某组合） ────────────────────────
 @app.post("/api/refresh")
-def api_refresh(portfolio: str = Query("default"), benchmark: str = Query("")):
-    pf = _get_pf(portfolio)
-    if not pf:
-        return JSONResponse({"ok": False, "message": "组合不存在"}, 404)
-    syms = [i["sym"] for i in pf["indices"]]
+def api_refresh(portfolio: str = Query("default"), benchmark: str = Query(""), _: None = Depends(_verify_token)):
+    # M12: 用 _refresh_lock 防并发刷新（与 _do_refresh / run-now 互斥）
+    acquired = _refresh_lock.acquire(blocking=False)
+    if not acquired:
+        return JSONResponse({"ok": False, "message": "已有刷新在进行，请稍后重试"}, 409)
     try:
+        with _state_lock:
+            pf = _get_pf(portfolio)
+        if not pf:
+            return JSONResponse({"ok": False, "message": "组合不存在"}, 404)
+        syms = [i["sym"] for i in pf["indices"]]
         nc = fetch_new(syms)
         bench_sym = benchmark.strip() if benchmark else None
         _recompute_cache(portfolio, bench_sym=bench_sym)
-        cache = _caches.get(portfolio, {})
-        return {"ok": True, "new_data_count": nc, "last_update": cache.get("last_update", "")}
+        with _state_lock:
+            cache = _caches.get(portfolio, {})
+            last_update = cache.get("last_update", "")
+        return {"ok": True, "new_data_count": nc, "last_update": last_update}
     except Exception as e:
         logger.error(f"刷新失败 [{portfolio}]: {traceback.format_exc()}")
         return JSONResponse({"ok": False, "message": str(e)}, 500)
+    finally:
+        _refresh_lock.release()
 
 @app.get("/api/status")
 def api_status(portfolio: str = Query("default"), benchmark: str = Query("")):
     bench_sym = benchmark.strip() if benchmark else None
     logger.info(f"[api_status] portfolio={portfolio}, bench_sym={bench_sym}")
-    if portfolio not in _caches or not _caches[portfolio].get("nav"):
+    with _state_lock:
+        need_recompute = portfolio not in _caches or not _caches[portfolio].get("nav")
+        need_bench = bench_sym and not (portfolio in _caches and _caches[portfolio].get("benchmark"))
+    if need_recompute or need_bench:
         _recompute_cache(portfolio, bench_sym=bench_sym)
-    cache = _caches.get(portfolio, {})
-    # 如果请求了基准但缓存中没有，强制重算
-    if bench_sym and not cache.get("benchmark"):
-        logger.info(f"[api_status] 缓存无基准数据，强制重算基准={bench_sym}")
-        _recompute_cache(portfolio, bench_sym=bench_sym)
-        cache = _caches.get(portfolio, {})
+    with _state_lock:
+        cache = dict(_caches.get(portfolio, {}))
     if not cache.get("nav"):
         return JSONResponse({"ok": False, "message": "暂无数据，请先刷新"}, 503)
     keys = ["nav", "stats", "rotation_log", "current_holding", "last_update"]
-    result = {"ok": True, **{k: cache[k] for k in keys}}
+    result = {"ok": True, **{k: cache[k] for k in keys if k in cache}}
     if bench_sym and cache.get("benchmark"):
         result["benchmark"] = cache["benchmark"]
         result["benchmark_sym"] = bench_sym
     return result
 
+@app.get("/api/portfolios/{pfid}/rotations")
+def api_get_rotations(pfid: str, limit: int = Query(200, ge=1, le=1000)):
+    """查询持久化的历史轮动记录（requirements.md #5）。重启后仍可查询。"""
+    # 优先从 DB 读；DB 为空时回退到内存缓存
+    rows = _load_rotations(pfid, limit)
+    if rows:
+        return {"ok": True, "rotations": rows}
+    with _state_lock:
+        cache = _caches.get(pfid, {})
+        rot = cache.get("rotation_log", [])
+    return {"ok": True, "rotations": rot[:limit]}
+
 # ─── 定时任务管理 ─────────────────────────────────────
 @app.get("/api/schedules")
 def api_list_schedules():
-    return {"schedules": _schedules}
+    with _state_lock:
+        return {"schedules": list(_schedules)}
 
 @app.post("/api/schedules")
-def api_save_schedules(data: dict = Body(...)):
+def api_save_schedules(data: dict = Body(...), _: None = Depends(_verify_token)):
     global _schedules
     raw = data.get("schedules", [])
     # 校验格式，忽略无效条目
@@ -946,30 +1116,37 @@ def api_save_schedules(data: dict = Body(...)):
             parts = t.split(":")
             hh, mm = int(parts[0]), int(parts[1])
             if not (0 <= hh <= 23 and 0 <= mm <= 59): raise ValueError()
-        except:
+        except (ValueError, IndexError):
             return JSONResponse({"ok": False, "message": f"时间格式错误: {t}，应为 HH:MM"}, 400)
         schedules.append({"id": tid, "time": t, "enabled": bool(s.get("enabled", True))})
 
-    _schedules = schedules
-    _save_schedules()
+    with _state_lock:
+        _schedules = schedules
+        _save_schedules()
     _sync_scheduler()
     return {"ok": True, "schedules": _schedules}
 
 @app.delete("/api/schedules/{sid}")
-def api_delete_schedule(sid: str):
+def api_delete_schedule(sid: str, _: None = Depends(_verify_token)):
     global _schedules
-    _schedules = [s for s in _schedules if s["id"] != sid]
-    _save_schedules()
+    with _state_lock:
+        _schedules = [s for s in _schedules if s["id"] != sid]
+        _save_schedules()
     _sync_scheduler()
     return {"ok": True}
 
 @app.post("/api/schedules/run-now")
-def api_run_now():
-    """立即触发一次刷新（测试用）"""
+def api_run_now(_: None = Depends(_verify_token)):
+    """立即触发一次刷新。M12: 复用 _do_refresh 的锁逻辑防并发。"""
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    acquired = _refresh_lock.acquire(blocking=False)
+    if not acquired:
+        return JSONResponse({"ok": False, "message": "已有刷新在进行，请稍后重试"}, 409)
     try:
         all_new = 0
-        for pf in PORTFOLIOS:
+        with _state_lock:
+            pfs_snapshot = list(PORTFOLIOS)
+        for pf in pfs_snapshot:
             syms = [i["sym"] for i in pf["indices"]]
             nc = fetch_new(syms)
             all_new += nc
@@ -979,14 +1156,27 @@ def api_run_now():
     except Exception as e:
         _append_log({"time": ts, "ok": False, "new_count": 0, "error": str(e)})
         return JSONResponse({"ok": False, "message": str(e)}, 500)
+    finally:
+        _refresh_lock.release()
 
 @app.get("/api/update-log")
 def api_update_log(limit: int = Query(20, ge=1, le=200)):
+    # M9: 读取 NDJSON（每行一个 JSON，末尾为最新；前端期望最新在前 → 反转）
     if not os.path.exists(UPDATE_LOG_PATH):
         return {"logs": []}
     try:
         with open(UPDATE_LOG_PATH, 'r', encoding='utf-8') as f:
-            logs = json.load(f)
-        return {"logs": logs[:limit]}
-    except:
+            lines = f.readlines()
+        logs = []
+        for line in reversed(lines):
+            line = line.strip()
+            if not line: continue
+            try:
+                logs.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+            if len(logs) >= limit: break
+        return {"logs": logs}
+    except OSError as e:
+        logger.error(f"读取 update-log 失败: {e}")
         return {"logs": []}

@@ -1,3 +1,52 @@
+## 0.1.15 (2026-06-17) — 架构加固 + 安全 + 性能 + 功能补全
+
+### 并发与正确性（CRITICAL/HIGH）
+- **C3** 全局状态 `_caches`/`PORTFOLIOS`/`_schedules` 加 `threading.RLock`，防 scheduler 线程与 HTTP handler 并发撕裂
+- **C4** 删死代码 `_sync_scheduler`（引用未定义的 `_do_refresh` = NameError），`_do_refresh` 提到模块级，`_init_scheduler` 内重复 `_sync` 合并
+- **M12** `/api/refresh` 与 `/api/schedules/run-now` 加 `_refresh_lock`，并发触发返回 409
+- **H9** 5 处裸 `except:` 改具体异常类型（`TypeError/ValueError/json.JSONDecodeError/OSError`）
+- **M6** SQLite 连接改 `_db_conn()` context manager，保证 commit/rollback/close（原每次 open 不 close 泄漏）
+- **M7** `compute()` 顶部 `df.copy()` 防污染调用方 DataFrame
+- **M2** `db_save` `INSERT OR IGNORE` → `INSERT OR REPLACE`（UPSERT，数据源修订历史 bar 时覆盖）
+
+### 安全
+- **C1** API token 鉴权（环境变量 `API_TOKEN`，未配置时放行便于 LAN 部署；写端点加 `Depends(_verify_token)`）
+- **H4/H5/H15** portfolio id 正则 `^[a-zA-Z0-9_-]{1,32}$` + 数值参数类型校验 + 范围裁剪（top_n 1-5 等）
+- **C6 残留** index.html 5 个 inline drag handler 改 `addEventListener`（CSP 可收紧）
+
+### 性能
+- **M4** `fetch_new` 用 `ThreadPoolExecutor(max_workers=4)` 并行抓取
+- **M9** `_append_log` 改 append-only NDJSON（不再每次重写 500 行 JSON）
+- **M29** 搜索加 `AbortController` 取消 in-flight 请求（防慢网 stale 覆盖）
+
+### 代码结构
+- **H6** `compute()` 轻量拆分：抽出 `_compute_momentum` / `_compute_stats` 纯函数（便于单测）；回测循环状态耦合深保留原样
+- **M34** 新增 `tests/test_compute.py` 烟雾测试（8 用例）+ `requirements-dev.txt`
+- **M33** 双引擎默认参数对齐（backtest_bt 与 main.py 一致）
+
+### Backtrader 引擎
+- **M13** `set_coc(False)` 防未来函数（原同 bar 收盘成交 = 偷看未来信号）
+- **H10/H11** 多持仓支持说明 + pnl 回填（`_last_open_idx` 机制对齐 main.py）
+- **M15** `--refresh-cache` 命令行参数强制刷新 CSV 缓存
+
+### 部署/运维
+- **M39** Dockerfile multi-stage build（builder 装 gcc，runtime 不含编译器，减体积/攻击面）
+- **L15** 镜像 pin digest 注释说明
+- **M35** 结构化日志（`LOG_FORMAT=json` 输出 JSON 便于 ELK/Loki）
+- docker-compose 加 `API_TOKEN` 环境变量
+
+### 功能补全（requirements.md）
+- **通知渠道** 飞书/Telegram（`FEISHU_WEBHOOK` / `TELEGRAM_BOT_TOKEN`+`TELEGRAM_CHAT_ID`），定时刷新成功/失败时推送
+- **历史轮动记录持久化** 新建 `rotations` 表，`_recompute_cache` 后 UPSERT；新增 `GET /api/portfolios/{pfid}/rotations`
+- **M25** 轮动历史去 60 条硬上限，加"显示更多"按钮
+
+### 待办（后续）
+- H3 完整异步化（BackgroundTasks + 前端轮询，当前用锁缓解并发）
+- M33 完整共享 strategy 模块（当前已对齐默认值）
+- 拆分 main.py 按 requirements.md 模块结构（大重构，单独进行）
+
+---
+
 ## 0.1.14 ✅ (2026-06-13) — UX P1 (轻量): 视觉/数据 bug 全修
 
 ### CSS Token 重构（L8 真修 — 双层语义）

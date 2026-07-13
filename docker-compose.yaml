@@ -12,6 +12,9 @@ services:
       - ./data:/data
     environment:
       - TZ=Asia/Shanghai
+      # API_TOKEN: 可选鉴权 token (main.py 通过 os.getenv("API_TOKEN") 读取).
+      # 留空则不启用鉴权, 适合 LAN 部署; 启用: 宿主 shell `export API_TOKEN=xxx` 后再 up -d.
+      - API_TOKEN=${API_TOKEN:-}
     # H40: 容器加固 —— 禁止提权、drop 全部 capability、按需放开
     security_opt:
       - no-new-privileges:true

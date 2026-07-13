@@ -44,3 +44,4 @@ test_write.txt
 .env.local
 secrets.enc
 .secret_key
+镜像仓库配置.md

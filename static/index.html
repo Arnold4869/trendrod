@@ -396,6 +396,14 @@
     .rot-card-pnl.up { color: var(--up); }
     .rot-card-pnl.down { color: var(--down); }
     .rot-card-pnl { color: var(--text-dim); }
+    /* M25: 轮动历史"显示更多"按钮 */
+    .rot-show-more {
+      margin-top: 10px; padding: 10px 12px; text-align: center;
+      font-size: 12px; color: var(--accent); cursor: pointer;
+      background: var(--accent-dim); border: 1px solid var(--border);
+      border-radius: var(--radius-sm); transition: background .15s;
+    }
+    .rot-show-more:hover { background: rgba(96,165,250,0.22); }
     /* 调仓连接器：垂直方向在卡片之间 */
     .rot-adj {
       display: flex; flex-direction: column; align-items: center;
@@ -488,6 +496,70 @@
     .pfcARD-btn.danger:hover { border-color: var(--up); color: var(--up); }
     .pfcARD.is-active { border-color: var(--accent); background: rgba(96,165,250,0.05); }
 
+    /* ── Toast (P2-M24) ── */
+    #toastHost {
+      position: fixed; top: 20px; right: 20px; left: auto;
+      z-index: 10000;
+      display: flex; flex-direction: column; gap: 8px;
+      pointer-events: none;
+    }
+    .toast {
+      padding: 10px 16px;
+      border-radius: 8px;
+      font-size: 13px; font-weight: 500;
+      background: var(--card); color: var(--text);
+      border: 1px solid var(--border);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+      animation: toast-in 0.2s ease-out;
+      pointer-events: auto;
+      max-width: 360px;
+      word-break: break-word;
+    }
+    .toast-success { border-left: 3px solid var(--down); }
+    .toast-error   { border-left: 3px solid var(--up); }
+    .toast-warn    { border-left: 3px solid var(--orange); }
+    .toast-info    { border-left: 3px solid var(--accent); }
+    .toast-out { opacity: 0; transform: translateX(20px); transition: all 0.2s ease-in; }
+    @keyframes toast-in { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
+
+    /* ── Dialog (P2-M24) ── */
+    .dialog-backdrop {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+      z-index: 10001;
+      display: flex; align-items: center; justify-content: center;
+      animation: dialog-in 0.15s ease-out;
+      padding: 20px;
+    }
+    .dialog {
+      background: var(--card); color: var(--text);
+      border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 20px; min-width: 320px; max-width: 480px; width: 100%;
+      box-shadow: 0 12px 32px rgba(0,0,0,0.32);
+    }
+    .dialog-title { font-size: 16px; font-weight: 600; margin-bottom: 10px; }
+    .dialog-content { font-size: 13px; color: var(--text-dim); margin-bottom: 16px; line-height: 1.5; white-space: pre-wrap; }
+    .dialog-input {
+      width: 100%; padding: 8px 10px; font-size: 14px;
+      background: var(--bg); color: var(--text);
+      border: 1px solid var(--border); border-radius: 6px;
+      margin-bottom: 16px; box-sizing: border-box;
+      font-family: inherit;
+    }
+    .dialog-input:focus { border-color: var(--accent); outline: none; }
+    .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+    .dialog-btn {
+      padding: 7px 16px; border-radius: 6px; font-size: 13px;
+      border: 1px solid var(--border); background: transparent;
+      color: var(--text); cursor: pointer; font-weight: 500;
+      font-family: inherit;
+    }
+    .dialog-btn:hover { background: var(--card-hover); }
+    .dialog-confirm { background: var(--accent); color: white; border-color: var(--accent); }
+    .dialog-confirm:hover { filter: brightness(1.1); }
+    .dialog-confirm.danger { background: var(--up); border-color: var(--up); }
+    .dialog-backdrop.dialog-out { opacity: 0; transition: opacity 0.15s; }
+    .dialog-backdrop.dialog-out .dialog { transform: scale(0.95); transition: transform 0.15s; }
+    @keyframes dialog-in { from { opacity: 0; } to { opacity: 1; } }
 </style>
 </head>
 <body>
@@ -660,7 +732,11 @@ let navChart = null;
 let activePf = 'default';
 let portfolios = [];
 let searchTimer = null;
+let searchAbortCtrl = null; // M29: 搜索 AbortController，发起新搜索时 abort 上一次 in-flight 请求
 let filteredRot = [];
+// M25: 轮动历史分页——默认展示最近 ROTATION_DEFAULT_LIMIT 条，点击"显示更多"展开全部
+var ROTATION_DEFAULT_LIMIT = 60;
+let rotationShowAll = false;
 let currentHolding = null;
 let chartMode = 'nav'; // 'nav' or 'return'
 let activeBench = '';  // benchmark symbol
@@ -698,12 +774,72 @@ function animateValue(el, start, end, duration, formatter) {
   requestAnimationFrame(step);
 }
 
-// ─── 消息提示 ──────────────────────────────
+// ─── Toast (P2-M24) ──────────────────────────────
+// 轻量级浮动提示: toast('保存成功', 'success') 或 toast('出错了', 'error', 5000)
+// type: success / error / warn / info (默认 info)
+function toast(msg, type, duration) {
+  duration = duration || 3000;
+  type = type || 'info';
+  var host = document.getElementById('toastHost');
+  if (!host) {
+    host = document.createElement('div');
+    host.id = 'toastHost';
+    document.body.appendChild(host);
+  }
+  var t = document.createElement('div');
+  t.className = 'toast toast-' + type;
+  t.textContent = msg;  // 不用 innerHTML 防 XSS
+  host.appendChild(t);
+  setTimeout(function() { t.classList.add('toast-out'); }, Math.max(0, duration - 200));
+  setTimeout(function() { if (t.parentNode) t.parentNode.removeChild(t); }, duration);
+}
+
+// ─── Dialog (P2-M24) ────────────────────────────
+// 轻量级模态对话框: dialog({ title, content, input, inputPlaceholder, confirmText, cancelText, danger, onConfirm(value) })
+// ESC 关闭, 点击 backdrop 关闭 (danger 操作除外)
+function dialog(opts) {
+  opts = opts || {};
+  var d = document.createElement('div');
+  d.className = 'dialog-backdrop';
+  var html = '<div class="dialog" role="dialog" aria-modal="true">';
+  html += '<div class="dialog-title">' + escHtml(opts.title || '') + '</div>';
+  if (opts.content) html += '<div class="dialog-content">' + escHtml(opts.content) + '</div>';
+  if (opts.input) html += '<input class="dialog-input" placeholder="' + escHtml(opts.inputPlaceholder || '') + '">';
+  html += '<div class="dialog-actions">';
+  html += '<button class="dialog-btn dialog-cancel" data-action="cancel">' + escHtml(opts.cancelText || '取消') + '</button>';
+  html += '<button class="dialog-btn dialog-confirm' + (opts.danger ? ' danger' : '') + '" data-action="confirm">' + escHtml(opts.confirmText || '确认') + '</button>';
+  html += '</div></div>';
+  d.innerHTML = html;
+  document.body.appendChild(d);
+  var input = d.querySelector('.dialog-input');
+  if (input) { setTimeout(function() { input.focus(); }, 30); }
+  function close(result, value) {
+    d.classList.add('dialog-out');
+    setTimeout(function() { if (d.parentNode) d.parentNode.removeChild(d); document.removeEventListener('keydown', onKey); }, 150);
+    if (result && typeof opts.onConfirm === 'function') opts.onConfirm(value);
+  }
+  function onKey(e) { if (e.key === 'Escape') close(false); }
+  document.addEventListener('keydown', onKey);
+  d.querySelector('[data-action="cancel"]').addEventListener('click', function() { close(false); });
+  d.querySelector('[data-action="confirm"]').addEventListener('click', function() { close(true, input ? input.value : null); });
+  if (input) {
+    input.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') { e.preventDefault(); close(true, input.value); }
+    });
+  }
+  if (!opts.danger) {
+    d.addEventListener('click', function(e) { if (e.target === d) close(false); });
+  }
+  // 危险对话框: 点 backdrop 不关 (但仍要 swallow click, 防止穿透)
+  if (opts.danger) {
+    d.addEventListener('click', function(e) { e.stopPropagation(); });
+  }
+}
+
+// ─── 消息提示 (P2-M24: 内部走 toast) ──────────────────────────────
 function showMsg(text, color) {
-  var el = document.getElementById('msgBar');
-  el.textContent = text; el.style.display = 'block';
-  el.style.color = color === 'red' ? 'var(--up)' : 'var(--down)';
-  setTimeout(function() { el.style.display = 'none'; }, 3000);
+  var type = color === 'red' ? 'error' : (color === 'green' ? 'success' : 'info');
+  toast(text, type);
 }
 
 // ─── 组合管理 ──────────────────────────────
@@ -778,36 +914,50 @@ async function switchTo(pfid) {
 }
 
 async function createPortfolio() {
-  var name = prompt('组合名称（英文ID）：');
-  if (!name) return;
-  var pfid = name.replace(/[^a-z0-9_-]/gi, '').toLowerCase() || 'pf' + Date.now();
-  try {
-    var r = await fetch('/api/portfolios', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: pfid, name: name, window: 22, indices: [] })
-    });
-    var d = await r.json();
-    if (!d.ok) { showMsg(d.message, 'red'); return; }
-    portfolios = (await (await fetch('/api/portfolios')).json()).portfolios;
-    renderPfBar();
-    await switchTo(pfid);
-    showMsg('已创建组合: ' + name, 'green');
-  } catch (e) { showMsg('创建失败', 'red'); }
+  dialog({
+    title: '新建组合',
+    input: true,
+    inputPlaceholder: '组合名称（英文ID）',
+    confirmText: '创建',
+    onConfirm: async function(name) {
+      if (!name) return;
+      var pfid = name.replace(/[^a-z0-9_-]/gi, '').toLowerCase() || 'pf' + Date.now();
+      try {
+        var r = await fetch('/api/portfolios', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: pfid, name: name, window: 22, indices: [] })
+        });
+        var d = await r.json();
+        if (!d.ok) { showMsg(d.message, 'red'); return; }
+        portfolios = (await (await fetch('/api/portfolios')).json()).portfolios;
+        renderPfBar();
+        await switchTo(pfid);
+        showMsg('已创建组合: ' + name, 'green');
+      } catch (e) { showMsg('创建失败', 'red'); }
+    }
+  });
 }
 
 async function deletePortfolio() {
-  if (!confirm('删除组合 ' + activePf + '？数据不丢，仅删配置。')) return;
-  try {
-    var r = await fetch('/api/portfolios/' + encodeURIComponent(activePf), { method: 'DELETE' });
-    var d = await r.json();
-    if (!d.ok) { showMsg(d.message, 'red'); return; }
-    portfolios = (await (await fetch('/api/portfolios')).json()).portfolios;
-    activePf = portfolios[0].id;
-    renderPfBar();
-    await switchTo(activePf);
-    showMsg('已删除', 'green');
-  } catch (e) { showMsg('删除失败', 'red'); }
+  dialog({
+    title: '删除组合',
+    content: '删除组合 ' + activePf + '？数据不丢，仅删配置。',
+    confirmText: '删除',
+    danger: true,
+    onConfirm: async function() {
+      try {
+        var r = await fetch('/api/portfolios/' + encodeURIComponent(activePf), { method: 'DELETE' });
+        var d = await r.json();
+        if (!d.ok) { showMsg(d.message, 'red'); return; }
+        portfolios = (await (await fetch('/api/portfolios')).json()).portfolios;
+        activePf = portfolios[0].id;
+        renderPfBar();
+        await switchTo(activePf);
+        showMsg('已删除', 'green');
+      } catch (e) { showMsg('删除失败', 'red'); }
+    }
+  });
 }
 
 // 实时显示权重之和
@@ -916,7 +1066,7 @@ function renderPfDrawer() {
   for (var i = 0; i < portfolios.length; i++) {
     var p = portfolios[i];
     var isAct = p.id === activePf;
-    html += '<div class="pfcARD' + (isAct ? ' is-active' : '') + '" draggable="true" data-id="' + escHtml(p.id) + '" ondragstart="onPfDragStart(event)" ondragover="onPfDragOver(event)" ondragleave="onPfDragLeave(event)" ondrop="onPfDrop(event)" ondragend="onPfDragEnd(event)" id="pfcARD-' + escHtml(p.id) + '">' +
+    html += '<div class="pfcARD' + (isAct ? ' is-active' : '') + '" draggable="true" data-id="' + escHtml(p.id) + '" id="pfcARD-' + escHtml(p.id) + '">' +
       '<div class="pfcARD-hd">' +
         '<span class="pfcARD-drag">☰</span>' +
         '<span class="pfcARD-name" id="pfcName-' + escHtml(p.id) + '" data-id="' + escHtml(p.id) + '" data-action="startRenamePf">' + escHtml(p.name) + '</span>' +
@@ -931,6 +1081,18 @@ function renderPfDrawer() {
     '</div>';
   }
   body.innerHTML = html;
+  bindPfCardDragHandlers();
+}
+// C6: 拖拽排序事件改为 JS 绑定（去内联，便于收紧 CSP）。渲染后统一 querySelector + addEventListener。
+function bindPfCardDragHandlers() {
+  var cards = document.querySelectorAll('#pfDrawerBody .pfcARD[draggable="true"]');
+  for (var k = 0; k < cards.length; k++) {
+    cards[k].addEventListener('dragstart', onPfDragStart);
+    cards[k].addEventListener('dragover', onPfDragOver);
+    cards[k].addEventListener('dragleave', onPfDragLeave);
+    cards[k].addEventListener('drop', onPfDrop);
+    cards[k].addEventListener('dragend', onPfDragEnd);
+  }
 }
 function startRenamePf(id) {
   var nameEl = document.getElementById('pfcName-' + id);
@@ -974,19 +1136,27 @@ async function duplicatePf(id) {
   } catch(e) { showMsg('复制失败', 'red'); }
 }
 async function deletePfFromDrawer(id) {
-  if (!confirm('删除组合「' + (portfolios.find(function(p){return p.id===id;})||{}).name + '」？')) return;
-  if (portfolios.length <= 1) { showMsg('至少保留一个组合', 'red'); return; }
-  try {
-    await fetch('/api/portfolios/' + encodeURIComponent(id), {method:'DELETE'});
-    portfolios = (await (await fetch('/api/portfolios')).json()).portfolios;
-    if (activePf === id) {
-      activePf = portfolios[0].id;
+  var pname = (portfolios.find(function(p){return p.id===id;})||{}).name || '';
+  dialog({
+    title: '删除组合',
+    content: '删除组合「' + pname + '」？',
+    confirmText: '删除',
+    danger: true,
+    onConfirm: async function() {
+      if (portfolios.length <= 1) { showMsg('至少保留一个组合', 'red'); return; }
+      try {
+        await fetch('/api/portfolios/' + encodeURIComponent(id), {method:'DELETE'});
+        portfolios = (await (await fetch('/api/portfolios')).json()).portfolios;
+        if (activePf === id) {
+          activePf = portfolios[0].id;
+        }
+        renderPfBar();
+        renderPfDrawer();
+        loadStatus();
+        showMsg('已删除', 'green');
+      } catch(e) { showMsg('删除失败', 'red'); }
     }
-    renderPfBar();
-    renderPfDrawer();
-    loadStatus();
-    showMsg('已删除', 'green');
-  } catch(e) { showMsg('删除失败', 'red'); }
+  });
 }
 // ─── 拖拽排序 ──────────────────────────────────────────────
 var dragSrcId = null;
@@ -1038,8 +1208,14 @@ document.getElementById('searchInput').addEventListener('input', function() {
 });
 
 async function doSearch(q) {
+  // M29: 取消上一次 in-flight 搜索请求，避免慢网下旧结果返回覆盖新结果
+  if (searchAbortCtrl) {
+    try { searchAbortCtrl.abort(); } catch (_) {}
+  }
+  searchAbortCtrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+  var signal = searchAbortCtrl ? searchAbortCtrl.signal : undefined;
   try {
-    var r = await fetch('/api/search_indices?q=' + encodeURIComponent(q));
+    var r = await fetch('/api/search_indices?q=' + encodeURIComponent(q), { signal: signal });
     var d = await r.json();
     var results = d.results || [];
     var drop = document.getElementById('searchDrop');
@@ -1053,7 +1229,10 @@ async function doSearch(q) {
       }).join('');
     }
     drop.classList.add('show');
-  } catch (e) {}
+  } catch (e) {
+    // M29: 主动 abort 引发的 AbortError 静默忽略；其它错误也静默（与原行为一致）
+    if (e && e.name === 'AbortError') return;
+  }
 }
 
 document.addEventListener('click', function(e) {
@@ -1101,8 +1280,8 @@ async function doRefresh() {
   try {
     var r = await fetch('/api/refresh?portfolio=' + encodeURIComponent(activePf) + '&_=' + Date.now(), { method: 'POST', cache: 'no-store' });
     var j = await r.json();
-    if (!j.ok) { alert('刷新失败: ' + (j.message || '')); btn.classList.remove('spinning'); return; }
-  } catch (e) { alert('请求失败: ' + e.message); btn.classList.remove('spinning'); return; }
+    if (!j.ok) { toast('刷新失败: ' + (j.message || ''), 'error'); btn.classList.remove('spinning'); return; }
+  } catch (e) { toast('请求失败: ' + e.message, 'error'); btn.classList.remove('spinning'); return; }
   await loadStatus();
   btn.classList.remove('spinning');
 }
@@ -1239,6 +1418,8 @@ function setDateRange(range) {
 }
 
 function filterAndRender(range) {
+  // M25: 切换区间或重载数据时，轮动历史回到默认折叠态（仅展示最近 ROTATION_DEFAULT_LIMIT 条）
+  rotationShowAll = false;
   var nav = fullNavData;
   var rot = fullRotData;
   var cutoff = resolveCutoff(range, nav);
@@ -1779,7 +1960,8 @@ function renderRotationHistory() {
   // 迭代从新到旧，每次处理一对（买→卖），配对成一轮
   var cards = [];
   var i = rot.length - 1;
-  while (i >= Math.max(0, rot.length - 60)) {
+  // M25: 去掉前端硬编码 60 条上限，先构建全部轮动卡片，再用 rotationShowAll 控制展示数量
+  while (i >= 0) {
     var sell = rot[i];
     // 跳过同一天先卖后买的买入行（不显示）
     if (i > 0 && rot[i-1].date === sell.date && (rot[i-1].signal === '买入' || rot[i-1].signal === '调仓')) {
@@ -1829,10 +2011,13 @@ function renderRotationHistory() {
     i = j - 1; // 跳过已配对的买入，继续往前找
   }
 
+  // M25: 默认只展示最近 ROTATION_DEFAULT_LIMIT 条，点击"显示更多"后展开全部
+  var visibleCards = rotationShowAll ? cards : cards.slice(0, ROTATION_DEFAULT_LIMIT);
+
   // 渲染：卡片只显示持仓，调仓动作插在卡片之间
   var rotHtml = '';
-  for (var c = 0; c < cards.length; c++) {
-    var card = cards[c];
+  for (var c = 0; c < visibleCards.length; c++) {
+    var card = visibleCards[c];
     // 卡片：只显示持仓时间段 + 持有谁 + 收益
     rotHtml += '<div class="rot-card ' + card.pnlClass + '">' +
       '<div class="rot-card-date">' + card.dateLabel + '</div>' +
@@ -1840,8 +2025,8 @@ function renderRotationHistory() {
       '<div class="rot-card-pnl ' + card.pnlClass + '">' + card.pnlDisplay + '</div>' +
     '</div>';
     // 两卡之间：调仓动作（垂直方向，箭头上方标注卖出/买入）
-    if (c < cards.length - 1) {
-      var nextCard = cards[c + 1];
+    if (c < visibleCards.length - 1) {
+      var nextCard = visibleCards[c + 1];
       rotHtml += '<div class="rot-adj">' +
         '<div class="rot-adj-label">' +
           '<span class="rot-adj-sell">卖出 ' + card.sellName + '</span>' +
@@ -1856,7 +2041,17 @@ function renderRotationHistory() {
     }
   }
   if (!rotHtml) rotHtml = '<div class="empty-state">暂无轮动记录</div>';
-  document.getElementById('rotationArea').innerHTML = '<div class="rot-card-grid">' + rotHtml + '</div>';
+  // M25: 未展开且卡片数超过默认上限时，显示"显示更多"按钮
+  var moreBtn = '';
+  if (!rotationShowAll && cards.length > ROTATION_DEFAULT_LIMIT) {
+    moreBtn = '<div class="rot-show-more" data-action="showAllRotation">显示更多（共 ' + cards.length + ' 条，已显示 ' + visibleCards.length + ' 条）</div>';
+  }
+  document.getElementById('rotationArea').innerHTML = '<div class="rot-card-grid">' + rotHtml + '</div>' + moreBtn;
+}
+// M25: 点击"显示更多"展开全部轮动历史
+function showAllRotation() {
+  rotationShowAll = true;
+  renderRotationHistory();
 }
 
 // ── 定时刷新 ──
