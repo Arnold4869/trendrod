@@ -9,7 +9,7 @@ on:
 env:
   REGISTRY: registry.cn-hangzhou.aliyuncs.com
   NAMESPACE: docker-pusher
-  IMAGE: sales_web
+  IMAGE: trendrod
 
 jobs:
   build-and-push:
@@ -21,7 +21,11 @@ jobs:
       - name: Extract tag
         id: meta
         run: |
-          TAG=${GITHUB_REF#refs/tags/}
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            TAG=${GITHUB_REF#refs/tags/}
+          else
+            TAG=latest
+          fi
           echo "tag=$TAG" >> $GITHUB_OUTPUT
 
       - name: Set up Docker Buildx
