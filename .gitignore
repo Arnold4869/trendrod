@@ -46,3 +46,4 @@ secrets.enc
 .secret_key
 镜像仓库配置.md
 GITHUB_ACTIONS_SETUP.md
+build-push.sh
