@@ -131,3 +131,47 @@ docker compose up -d
 | `REGISTRY` | `registry.cn-hangzhou.aliyuncs.com` | 如需其他 region 可改 |
 
 只需改 workflow 文件里的 `NAMESPACE` 和 `IMAGE`，其余完全通用。
+
+---
+
+## 常见问题
+
+### Q1: 阿里云只有 `latest`，没有版本 tag（如 `v0.1.15`）
+
+**原因**：tag 指向的是旧 commit，而 workflow 文件的修改在更新的 commit 上。GitHub Actions 检出的是 tag 指向的代码，所以运行的是旧版 workflow。
+
+**解决**：把 tag 移到最新 commit 后重新 push。
+
+```bash
+# 本地删除 tag
+git tag -d v0.1.15
+
+# 在最新 commit 上重新打 tag
+git tag -a v0.1.15 -m "v0.1.15 release"
+
+# 删除远程旧 tag，推送新 tag
+git push origin --delete v0.1.15
+git push origin v0.1.15
+```
+
+### Q2: Actions 报错 `Password required`
+
+**原因**：`ALIYUN_PASSWORD` secret 未设置或为空。
+
+**解决**：检查仓库 **Settings → Secrets and variables → Actions** 中是否存在 `ALIYUN_PASSWORD`，且值为阿里云镜像仓库登录密码。
+
+### Q3: Actions 报错 `invalid tag "refs/heads/main"`
+
+**原因**：手动触发（`workflow_dispatch`）或分支 push 时，`GITHUB_REF` 的值是 `refs/heads/main`，直接当 tag 用会导致格式错误。
+
+**解决**：workflow 中 tag 提取逻辑已加判断（见上方 YAML）：
+
+```bash
+if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+  TAG=${GITHUB_REF#refs/tags/}
+else
+  TAG=latest
+fi
+```
+
+非 tag 触发时自动回退到 `latest`。
